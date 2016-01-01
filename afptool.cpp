@@ -1,25 +1,57 @@
 
+/*
+ * Copyright original "C version" author: unknown
+ * Copyright (C) 2016 SoftPLC Corporation, Dick Hollenbeck <dick@softplc.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 3
+ * of the License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you may find one here:
+ * http://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+ * or you may search the http://www.gnu.org website for the version 2 license,
+ * or you may write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
+ */
+
+
 #include <stdio.h>
 #include <string.h>
+#include <err.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <ctype.h>
-
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include "rkcrc.h"
 #include "rkafp.h"
 
+#if defined(DEBUG)
+ #define D(x)   x
+#else
+ #define D(x)
+#endif
+
+
 const char* appname;
+
 
 
 uint32_t filestream_crc( FILE* fs, size_t stream_len )
 {
-    char buffer[1024];
+    char buffer[1024*16];
+
     uint32_t crc = 0;
 
     unsigned read_len;
@@ -59,32 +91,57 @@ int create_dir( char* dir )
 }
 
 
-int extract_file( FILE* fp, off_t ofst, size_t len, const char* path )
+int extract_file( FILE* fp, off_t offset, size_t len, const char* path )
 {
-    FILE*   ofp;
-    char    buffer[1024];
+    char    buffer[1024*16];
 
-    if( ( ofp = fopen( path, "wb" ) ) == NULL )
+    FILE*   fp_out = fopen( path, "wb" );
+
+    if( !fp_out )
     {
         printf( "Can't open/create file: %s\n", path );
         return -1;
     }
 
-    fseeko( fp, ofst, SEEK_SET );
+    fseeko( fp, offset, SEEK_SET );
 
+#if 1
     while( len )
     {
-        size_t read_len = len < sizeof(buffer) ? len : sizeof(buffer);
-        read_len = fread( buffer, 1, read_len, fp );
+        size_t  ask = len < sizeof(buffer) ? len : sizeof(buffer);
+        size_t  got = fread( buffer, 1, ask, fp );
 
-        if( !read_len )
+        if( ask != got )
+        {
+            printf(
+                "extraction of file '%s' is bad; insufficient length in container image file\n"
+                "ask=%zu got=%zu\n",
+                path,
+                ask,
+                got
+                );
             break;
+        }
 
-        fwrite( buffer, read_len, 1, ofp );
-        len -= read_len;
+        fwrite( buffer, got, 1, fp_out );
+        len -= got;
     }
+#else
+     while( len )
+     {
+         size_t read_len = len < sizeof(buffer) ? len : sizeof(buffer);
+         read_len = fread( buffer, 1, read_len, fp );
 
-    fclose( ofp );
+         if( !read_len )
+             break;
+
+         fwrite( buffer, read_len, 1, fp_out );
+         len -= read_len;
+     }
+
+#endif
+
+    fclose( fp_out );
 
     return 0;
 }
@@ -92,64 +149,75 @@ int extract_file( FILE* fp, off_t ofst, size_t len, const char* path )
 
 int unpack_update( const char* srcfile, const char* dstdir )
 {
-    FILE* fp = NULL;
-    struct update_header header;
-    uint32_t crc = 0;
+    UPDATE_HEADER header;
 
-    fp = fopen( srcfile, "rb" );
+    FILE* fp = fopen( srcfile, "rb" );
 
     if( !fp )
     {
-        fprintf( stderr, "can't open file \"%s\": %s\n", srcfile,
-                strerror( errno ) );
-        goto unpack_fail;
+        err( EXIT_FAILURE, "%s: can't open file '%s'", __func__, srcfile );
     }
-
-    fseek( fp, 0, SEEK_SET );
 
     if( sizeof(header) != fread( &header, 1, sizeof(header), fp ) )
     {
-        fprintf( stderr, "Can't read image header\n" );
-        goto unpack_fail;
+        err( EXIT_FAILURE, "%s: can't read image header from file '%s'", __func__, srcfile );
     }
 
     if( strncmp( header.magic, RKAFP_MAGIC, sizeof(header.magic) ) != 0 )
     {
-        fprintf( stderr, "Invalid header magic\n" );
-        goto unpack_fail;
+        err( EXIT_FAILURE, "%s: invalid header magic id in file '%s'", __func__, srcfile );
     }
 
-    fseek( fp, header.length, SEEK_SET );
+    fseek( fp, 0, SEEK_END );
 
-    if( sizeof(crc) != fread( &crc, 1, sizeof(crc), fp ) )
+    unsigned filesize = ftell(fp);
+
+    if( filesize - 4 < header.length )
     {
-        fprintf( stderr, "Can't read crc checksum\n" );
-        goto unpack_fail;
+        printf( "update_header has length greater than file's length, cannot check crc\n" );
     }
-
-
-    printf( "Check file..." );
-    fflush( stdout );
-    fseek( fp, 0, SEEK_SET );
-
-    if( crc != filestream_crc( fp, header.length ) )
+    else
     {
-        printf( "CRC mismatch, so failure.\n" );
-        goto unpack_fail;
+        fseek( fp, header.length, SEEK_SET );
+
+        uint32_t crc;
+
+        unsigned readcount;
+        readcount = fread( &crc, 1, sizeof(crc), fp );
+
+        if( sizeof(crc) != readcount )
+        {
+            fprintf( stderr, "Can't read crc checksum, readcount=%d header.len=%u\n",
+                readcount, header.length );
+        }
+
+        printf( "Checking file's crc..." );
+        fflush( stdout );
+
+        fseek( fp, 0, SEEK_SET );
+
+        if( crc != filestream_crc( fp, header.length ) )
+        {
+            if( filesize-4 > header.length )
+                fprintf( stderr, "CRC mismatch, however the file's size was bigger than header indicated\n");
+            else
+                err( EXIT_FAILURE, "%s: invalid crc for file '%s'", __func__, srcfile );
+        }
+        else
+            printf( "OK\n" );
     }
 
-    printf( "OK\n" );
-
-    printf( "------- UNPACK -------\n" );
+    printf( "------- UNPACKING %d parts -------\n", header.num_parts );
 
     if( header.num_parts )
     {
-        char dir[PATH_MAX];
+        char dir[4096];
 
         for( unsigned i = 0; i < header.num_parts; i++ )
         {
-            struct update_part* part = &header.parts[i];
-            printf( "%s\t0x%08X\t0x%08X\n", part->filename, part->pos,
+            UPDATE_PART* part = &header.parts[i];
+
+            printf( "%-32s0x%08X\t0x%08X\n", part->filename, part->pos,
                     part->size );
 
             if( strcmp( part->filename, "SELF" ) == 0 )
@@ -358,7 +426,7 @@ int action_parse_key( char* key, char* value )
 
 int parse_parameter( const char* fname )
 {
-    char    line[512];
+    char    line[4096];
     char*   startp;
     char*   endp;
     char*   key;
@@ -405,7 +473,7 @@ int parse_parameter( const char* fname )
 
     if( !feof( fp ) )
     {
-        printf( "File read failed!\n" );
+        printf( "parameter file has a very long line that I cannot handle!\n" );
         fclose( fp );
         return -3;
     }
@@ -488,16 +556,17 @@ void append_package( const char* name, const char* path )
 
 int get_packages( const char* fname )
 {
-    char    line[512];
+    char    line[4096];
     char*   startp;
     char*   endp;
     char*   name;
     char*   path;
-    FILE*   fp;
 
-    if( ( fp = fopen( fname, "r" ) ) == NULL )
+    FILE*   fp = fopen( fname, "r" );
+
+    if( !fp )
     {
-        printf( "Can't open file: %s\n", fname );
+        printf( "Can't open file '%s'\n", fname );
         return -1;
     }
 
@@ -539,7 +608,7 @@ int get_packages( const char* fname )
 
     if( !feof( fp ) )
     {
-        printf( "File read failed!\n" );
+        printf( "File '%s' has a long which is too long for me, sorry!\n", fname );
         fclose( fp );
         return -3;
     }
@@ -550,26 +619,31 @@ int get_packages( const char* fname )
 }
 
 
-int import_package( FILE* ofp, struct update_part* pack, const char* path )
+int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
 {
-    FILE*   ifp;
-    char    buf[2048];
+    char    buf[2048];      // must be 2048 for param part
     size_t  readlen;
 
-    pack->pos = ftell( ofp );
-    ifp = fopen( path, "rb" );
+    pack->pos = ftell( fp_out );
 
-    if( !ifp )
+    FILE*   fp_in = fopen( path, "rb" );
+
+    if( !fp_in )
+    {
+        fprintf( stderr, "Cannot open input file '%s'\n", path );
         return -1;
+    }
 
     if( strcmp( pack->name, "parameter" ) == 0 )
     {
-        unsigned crc = 0;
+        uint32_t crc = 0;
         PARAM_HEADER* header = (PARAM_HEADER*) buf;
 
         memcpy( header->magic, "PARM", sizeof(header->magic) );
 
-        readlen = fread( buf + sizeof(*header), 1, sizeof(buf) - 12, ifp );
+        readlen = fread( buf + sizeof(*header), 1,
+                        sizeof(buf) - sizeof(*header) - sizeof(crc), fp_in );
+
         header->length = readlen;
         RKCRC( crc, buf + sizeof(*header), readlen );
 
@@ -579,14 +653,14 @@ int import_package( FILE* ofp, struct update_part* pack, const char* path )
         readlen += sizeof(crc);
         memset( buf + readlen, 0, sizeof(buf) - readlen );
 
-        fwrite( buf, 1, sizeof(buf), ofp );
+        fwrite( buf, 1, sizeof(buf), fp_out );
         pack->size += readlen;
         pack->padded_size += sizeof(buf);
     }
     else
     {
         do {
-            readlen = fread( buf, 1, sizeof(buf), ifp );
+            readlen = fread( buf, 1, sizeof(buf), fp_in );
 
             if( readlen == 0 )
                 break;
@@ -594,13 +668,13 @@ int import_package( FILE* ofp, struct update_part* pack, const char* path )
             if( readlen < sizeof(buf) )
                 memset( buf + readlen, 0, sizeof(buf) - readlen );
 
-            fwrite( buf, 1, sizeof(buf), ofp );
+            fwrite( buf, 1, sizeof(buf), fp_out );
             pack->size += readlen;
             pack->padded_size += sizeof(buf);
-        } while( !feof( ifp ) );
+        } while( !feof( fp_in ) );
     }
 
-    fclose( ifp );
+    fclose( fp_in );
 
     return 0;
 }
@@ -608,7 +682,7 @@ int import_package( FILE* ofp, struct update_part* pack, const char* path )
 
 void append_crc( FILE* fp )
 {
-    unsigned crc = 0;
+    uint32_t crc = 0;
     off_t file_len = 0;
 
     fseeko( fp, 0, SEEK_END );
@@ -619,7 +693,7 @@ void append_crc( FILE* fp )
 
     fseek( fp, 0, SEEK_SET );
 
-    printf( "Add CRC...\n" );
+    printf( "Adding CRC...\n" );
 
     crc = filestream_crc( fp, file_len );
 
@@ -631,8 +705,8 @@ void append_crc( FILE* fp )
 int pack_update( const char* srcdir, const char* dstfile )
 {
     UPDATE_HEADER header;
-    FILE*   fp = NULL;
-    char    buf[PATH_MAX];
+
+    char    buf[4096];
 
     printf( "------ PACKAGE ------\n" );
     memset( &header, 0, sizeof(header) );
@@ -647,7 +721,7 @@ int pack_update( const char* srcdir, const char* dstfile )
     if( get_packages( buf ) )
         return -1;
 
-    fp = fopen( dstfile, "wb+" );
+    FILE* fp = fopen( dstfile, "wb+" );
 
     if( !fp )
     {
@@ -668,7 +742,7 @@ int pack_update( const char* srcdir, const char* dstfile )
             continue;
 
         snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].filename );
-        printf( "Add file: %s\n", buf );
+        printf( "Adding file: %s\n", buf );
         import_package( fp, &header.parts[i], buf );
     }
 
@@ -716,8 +790,8 @@ void usage()
     printf( "USAGE:\n"
             "\t%s <-pack|-unpack> <Src> <Dest>\n\n"
             "Examples:\n"
-            "\t%s -pack xxx update.img\tpack files\n"
-            "\t%s -unpack update.img xxx\tunpack files\n",
+            "\t%s -pack <src_dir> update.img\tpack files\n"
+            "\t%s -unpack update.img <out_dir>\tunpack files\n",
             appname, appname, appname
             );
 }
@@ -725,6 +799,8 @@ void usage()
 
 int main( int argc, char** argv )
 {
+    int ret = 0;
+
     appname = strrchr( argv[0], '/' );;
 
     if( appname )
@@ -742,23 +818,27 @@ int main( int argc, char** argv )
 
     if( strcmp( argv[1], "-pack" ) == 0 && argc == 4 )
     {
-        if( pack_update( argv[2], argv[3] ) == 0 )
-            printf( "Pack OK!\n" );
+        ret = pack_update( argv[2], argv[3] ) ;
+
+        if( ret == 0 )
+            printf( "Packed OK.\n" );
         else
-            printf( "Pack failed\n" );
+            printf( "Packing failed!\n" );
     }
     else if( strcmp( argv[1], "-unpack" ) == 0 && argc == 4 )
     {
-        if( unpack_update( argv[2], argv[3] ) == 0 )
-            printf( "UnPack OK!\n" );
+        ret = unpack_update( argv[2], argv[3] );
+
+        if( ret == 0 )
+            printf( "UnPacked OK.\n" );
         else
-            printf( "UnPack failed\n" );
+            printf( "UnPack failed!\n" );
     }
     else
     {
         usage();
-        return 2;
+        ret = 2;
     }
 
-    return 0;
+    return ret;
 }

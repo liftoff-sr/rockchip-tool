@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-typedef struct update_part {
+struct UPDATE_PART {
     char         name[32];
     char         filename[60];
     uint32_t     nand_size;
@@ -11,10 +11,10 @@ typedef struct update_part {
     uint32_t     nand_addr;
     uint32_t     padded_size;
     uint32_t     size;
-} UPDATE_PART;
+};
 
 
-typedef struct update_header {
+struct UPDATE_HEADER {
     char        magic[4];
 
 #define RKAFP_MAGIC "RKAF"
@@ -29,12 +29,12 @@ typedef struct update_header {
 
     UPDATE_PART parts[16];
     char        reserved[0x74];
-} UPDATE_HEADER;
+};
 
 
-typedef struct param_header {
+struct PARAM_HEADER {
     char        magic[4];
     uint32_t    length;
-} PARAM_HEADER;
+};
 
 #endif // _RKAFP_H

@@ -108,7 +108,7 @@ int unpack_rom( const char* filepath, const char* dstfile )
 #if defined(DEBUG)
     printf( "rom.head_len=%d\n", rom_header.head_len );
     printf( "sizeof rkfw=%zd\n", sizeof(rom_header) );
-    printf( "&backup_endpos=0x%02x\n", (int) offsetof( struct rkfw_header, backup_endpos ) );
+    printf( "&backup_endpos=0x%02x\n", (int) offsetof( RKFW_HEADER, backup_endpos ) );
 #endif
 
     printf( "ROM header:\n" );
