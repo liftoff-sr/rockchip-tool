@@ -217,8 +217,21 @@ int unpack_update( const char* srcfile, const char* dstdir )
         {
             UPDATE_PART* part = &header.parts[i];
 
-            printf( "%-32s0x%08X\t0x%08X\n", part->filename, part->pos,
-                    part->size );
+            printf( "%-32s0x%08x  0x%08x",
+                    part->filename,
+                    part->pos,
+                    part->size
+                    );
+
+            D(printf( " (%-7u) padded_size:0x%08x (%-6u)  nand_size:0x%08x (%-6u)",
+                part->size,
+                part->padded_size,
+                part->padded_size,
+                part->nand_size,
+                part->nand_size
+                );)
+
+            printf( "\n" );
 
             if( strcmp( part->filename, "SELF" ) == 0 )
             {
@@ -226,7 +239,6 @@ int unpack_update( const char* srcfile, const char* dstdir )
                 continue;
             }
 
-            // parameter 多出文件头8个字节,文件尾4个字节
             if( memcmp( part->name, "parameter", 9 ) == 0 )
             {
                 part->pos   += 8;
@@ -750,6 +762,7 @@ int pack_update( const char* srcdir, const char* dstfile )
     strcpy( header.manufacturer, package_image.manufacturer );
     strcpy( header.model, package_image.machine_model );
     strcpy( header.id, package_image.machine_id );
+
     header.length = ftell( fp );
     header.num_parts = package_image.num_package;
     header.version = package_image.version;

@@ -104,7 +104,7 @@ void help()
 
 int main( int argc, char** argv )
 {
-    progname = strrchr( progname, '/' );
+    progname = strrchr( argv[0], '/' );
 
     if( !progname )
         progname = argv[0];

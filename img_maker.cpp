@@ -12,6 +12,12 @@
 
 static const char* progname;
 
+
+/**
+ * Function import_data
+ *
+ * @param infile which file to import
+ */
 unsigned import_data( const char* infile, void* head, size_t head_len, FILE* fp )
 {
     unsigned readlen;
@@ -141,6 +147,7 @@ int pack_rom( int chiptype,
 
     fprintf( stderr, "generate image...\n" );
 
+    // open the boot loader, typically <uboot's_full_name>.bin
     rom_hdr.loader_length = import_data( loader_filename,
             &loader_hdr,
             sizeof(loader_hdr),
@@ -148,7 +155,7 @@ int pack_rom( int chiptype,
 
     if( rom_hdr.loader_length < sizeof(loader_hdr) )
     {
-        fprintf( stderr, "invalid loader :\"\%s\"\n", loader_filename );
+        fprintf( stderr, "boot loader file '%s' is not long enough\n", loader_filename );
         goto pack_fail;
     }
 
@@ -204,7 +211,7 @@ pack_fail:
 void usage()
 {
     fprintf( stderr, "USAGE:\n"
-            "\t%s <chiptype> <loader> <major ver> <minor ver> <subver> <old image> <out image>\n\n"
+            "\t%s <chiptype> <loader> <major_version> <minor_version> <sub_version> <input_image> <out_image>\n\n"
             "Example for an RK32 board:\n"
             "\t%s -rk32 Loader.bin 4 4 0 rawimage.img rkimage.img\n"
             "\n"
@@ -217,7 +224,7 @@ void usage()
 
 int main( int argc, char** argv )
 {
-    progname = strrchr( progname, '/' );
+    progname = strrchr( argv[0], '/' );
 
     if( !progname )
         progname = argv[0];
