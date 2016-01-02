@@ -9,7 +9,7 @@ project( rk-tools )
 
 cmake_minimum_required( VERSION 2.8.12 FATAL_ERROR )
 
-find_package( OpenSSL )
+find_package( OpenSSL REQUIRED )
 
 include_directories( ${OPENSSL_INCLUDE_DIR} )
 
@@ -17,7 +17,11 @@ set( CMAKE_C_FLAGS_DEBUG   "-g3 -ggdb3 -DDEBUG" )
 set( CMAKE_CXX_FLAGS_DEBUG "-g3 -ggdb3 -DDEBUG" )
 
 
-add_definitions( -DUSE_OPENSSL -Wno-unused-result )
+add_definitions(
+    -DUSE_OPENSSL
+    -Wno-unused-result
+#    -std=gnu++11                # needed for std::map initializer
+    )
 
 add_executable( afptool
     afptool.cpp

@@ -3,6 +3,11 @@ rockchip-tools
 
 RockChip tools for RK29, RK30, and RK32 boards.
 
+2-Jan-2016
+==========
+Fixes, improved comments, and defensive programming additions.
+
+
 1-Jan-2016
 ==========
 Converted to C++ from C to preserve my sanity.  I don't understand C.

@@ -35,10 +35,14 @@
 #include <sys/types.h>
 #include <string>
 #include <vector>
+#include <map>
 
 #include "rkcrc.h"
 #include "rkafp.h"
 #include "rkrom.h"
+
+#define VERSION     "Jan  2 2016"
+
 
 #if defined(DEBUG)
  #define D(x)   x
@@ -780,6 +784,35 @@ void append_crc( FILE* fp )
 }
 
 
+#if 0
+unsigned partition_padding( const char* aPartitionName )
+{
+    typedef std::map< const char*, unsigned >   PAD_MAP;
+
+    // a table of bootloader partion names and pad sizes to use
+    // in producing the kernel CMDLINE line string.  The PAD
+    // numeric value is the gap to leave beyond the rounded up
+    // size found by examining the size of the file going into
+    // that partition.
+    static const PAD_MAP dictionary = {
+        { "bootloader",     1*1024*1024 },  // 1*1024*1024 = a megabyte
+        { "parameter",      1*1024*1024 },
+        { "recover-script", 1*1024*1024 },
+        { "resource",       5*1024*1024 },
+    };
+
+    PAD_MAP::const_iterator it = dictionary.find( aPartitionName );
+
+    // return value is in bytes, not flash pages.
+
+    if( it == dictionary.end() )
+        return 0;
+
+    return it->second;
+}
+#endif
+
+
 int compute_cmdline( const char* srcdir )
 {
     char    buf[4096];
@@ -801,19 +834,25 @@ int compute_cmdline( const char* srcdir )
     {
         stat( Packages[i].fullpath, &st );
 
+        // Add any padding requested in the PAD_MAP to the end of the parition.
+        // Might be useful for some parititions, but since you have access to
+        // this tool you can tweak this according to your needs.  Not mandatory for me.
+//      st.st_size += partition_padding( Packages[i].name );
+
+
         /*
 
         Only some of these loop iterations of calculations will be publicly
         visible in this function's output. While all uncommented lines coming
-        from the "package-list" file are are bootloader partitions, only some of
+        from the "package-list" file are bootloader partitions, only some of
         them will also be linux partitions.
 
         That means things don't get critical until the first bootloader
         partition which is also going to be a linux partition. We set the
         starting flash byte offset of the first linux boot partition to be AT
-        LEAST 4 MBytes. For bootloader partitions which are not linux
-        partitions, it makes sense to have them be earlier in your package-list
-        file than the first linux parition.
+        LEAST at the 4 MByte boundary or higher. For bootloader partitions which
+        are not linux partitions, it makes sense to have them be earlier in your
+        package-list file than the first linux parition.
 
         Both the flash offsets and the partition sizes are in flash page size
         units of 512 bytes.
@@ -849,12 +888,13 @@ int compute_cmdline( const char* srcdir )
 
         if( !out )
         {
-            // first exported partition should be @ >= 4 Mbyte
+            // First exported partition should be @ >= 4 Mbyte.  Leave
+            // a gap below this if we are not already over this minimum.
             if( Packages[i].image_offset < 0x2000 * 512 )
             {
                 Packages[i].image_offset = 0x2000 * 512;
 
-                // plan for the next linux partition after this one.
+                // Plan for the next linux partition after this one.
                 flash_offset = Packages[i].image_offset + Packages[i].image_size;
             }
         }
@@ -1008,7 +1048,7 @@ int main( int argc, char** argv )
     else
         appname = argv[0];
 
-    fprintf( stderr, "%s version: " __DATE__ "\n\n", appname );
+    fprintf( stderr, "%s version: " VERSION "\n\n", appname );
 
     if( argc < 3 )
     {
