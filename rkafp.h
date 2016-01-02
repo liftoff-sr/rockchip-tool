@@ -7,12 +7,12 @@
 
 struct UPDATE_PART {
     char         name[32];
-    char         filename[60];
+    char         fullpath[60];
     uint32_t     nand_size;
-    uint32_t     pos;
-    uint32_t     nand_addr;
-    uint32_t     padded_size;
-    uint32_t     size;
+    uint32_t     image_offset;
+    uint32_t     nand_offset;
+    uint32_t     image_size;
+    uint32_t     file_size;
 };
 
 

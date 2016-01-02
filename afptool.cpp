@@ -1,6 +1,6 @@
 
 /*
- * Copyright original "C version" author: unknown
+ * original "C version" author is unknown
  * Copyright (C) 2016 SoftPLC Corporation, Dick Hollenbeck <dick@softplc.com>
  *
  * This program is free software; you can redistribute it and/or
@@ -33,9 +33,12 @@
 #include <ctype.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <string>
+#include <vector>
 
 #include "rkcrc.h"
 #include "rkafp.h"
+#include "rkrom.h"
 
 #if defined(DEBUG)
  #define D(x)   x
@@ -83,29 +86,27 @@ int create_dir( char* dir )
             return -1;
         }
 
-        *sep = '/';
-        sep++;
+        *sep++ = '/';
     }
 
     return 0;
 }
 
 
-int extract_file( FILE* fp, off_t offset, size_t len, const char* path )
+int extract_file( FILE* fp, off_t offset, size_t len, const char* fullpath )
 {
     char    buffer[1024*16];
 
-    FILE*   fp_out = fopen( path, "wb" );
+    FILE*   fp_out = fopen( fullpath, "wb" );
 
     if( !fp_out )
     {
-        printf( "Can't open/create file: %s\n", path );
+        printf( "Can't open/create file: %s\n", fullpath );
         return -1;
     }
 
     fseeko( fp, offset, SEEK_SET );
 
-#if 1
     while( len )
     {
         size_t  ask = len < sizeof(buffer) ? len : sizeof(buffer);
@@ -116,7 +117,7 @@ int extract_file( FILE* fp, off_t offset, size_t len, const char* path )
             printf(
                 "extraction of file '%s' is bad; insufficient length in container image file\n"
                 "ask=%zu got=%zu\n",
-                path,
+                fullpath,
                 ask,
                 got
                 );
@@ -126,20 +127,6 @@ int extract_file( FILE* fp, off_t offset, size_t len, const char* path )
         fwrite( buffer, got, 1, fp_out );
         len -= got;
     }
-#else
-     while( len )
-     {
-         size_t read_len = len < sizeof(buffer) ? len : sizeof(buffer);
-         read_len = fread( buffer, 1, read_len, fp );
-
-         if( !read_len )
-             break;
-
-         fwrite( buffer, read_len, 1, fp_out );
-         len -= read_len;
-     }
-
-#endif
 
     fclose( fp_out );
 
@@ -218,45 +205,51 @@ int unpack_update( const char* srcfile, const char* dstdir )
             UPDATE_PART* part = &header.parts[i];
 
             printf( "%-32s0x%08x  0x%08x",
-                    part->filename,
-                    part->pos,
-                    part->size
+                    part->fullpath,
+                    part->image_offset,
+                    part->file_size
                     );
 
-            D(printf( " (%-7u) padded_size:0x%08x (%-6u)  nand_size:0x%08x (%-6u)",
-                part->size,
-                part->padded_size,
-                part->padded_size,
-                part->nand_size,
-                part->nand_size
+            D(printf( " (%-7u) image_size:0x%08x (%-6u)  image_size:0x%08x (%-6u)",
+                part->file_size,
+                part->image_size,
+                part->image_size,
+                part->image_size,
+                part->image_size
                 );)
 
             printf( "\n" );
 
-            if( strcmp( part->filename, "SELF" ) == 0 )
+            if( !strcmp( part->fullpath, "SELF" ) )
             {
                 printf( "Skip SELF file.\n" );
                 continue;
             }
 
-            if( memcmp( part->name, "parameter", 9 ) == 0 )
+            if( !strcmp( part->fullpath, "RESERVED" ) )
             {
-                part->pos   += 8;
-                part->size  -= 12;
+                printf( "Skip RESERVED file.\n" );
+                continue;
             }
 
-            snprintf( dir, sizeof(dir), "%s/%s", dstdir, part->filename );
+            if( memcmp( part->name, "parameter", 9 ) == 0 )
+            {
+                part->image_offset   += 8;
+                part->file_size  -= 12;
+            }
+
+            snprintf( dir, sizeof(dir), "%s/%s", dstdir, part->fullpath );
 
             if( -1 == create_dir( dir ) )
                 continue;
 
-            if( part->pos + part->size > header.length )
+            if( part->image_offset + part->file_size > header.length )
             {
                 fprintf( stderr, "Invalid part: %s\n", part->name );
                 continue;
             }
 
-            extract_file( fp, part->pos, part->size, dir );
+            extract_file( fp, part->image_offset, part->file_size, dir );
         }
     }
 
@@ -278,90 +271,193 @@ unpack_fail:
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // pack functions
 
-struct PACK_PART
+struct PACKAGE
 {
     char        name[32];
-    char        filename[60];
-    uint32_t    nand_addr;
-    uint32_t    nand_size;
+    char        fullpath[60];
+    uint32_t    image_offset;
+    uint32_t    image_size;
+
+    PACKAGE()
+    {
+        memset( this, 0, sizeof(*this) );
+    }
+
+    void Show()
+    {
+        printf( "name:%-34s image_offset:0x%08x  image_size:0x%08x fullpath:%s\n",
+            name, image_offset, image_size, fullpath );
+    }
 };
+
 
 struct PARTITION
 {
     char        name[32];
     uint32_t    start;
     uint32_t    size;
+
+
+    PARTITION()
+    {
+        memset( name, 0, sizeof(name) );
+        start = 0;
+        size  = 0;
+    }
+
+    PARTITION( const char* aName, unsigned aStart, unsigned aSize ) :
+        start( aStart ),
+        size( aSize )
+    {
+        strncpy( name, aName, sizeof(name) );
+    }
+
+    void Show()
+    {
+        printf( "name:%-34s start:0x%08x size:0x%08x\n",
+            name, start, size );
+    }
 };
 
+typedef std::vector<PACKAGE>    PACKAGES_BASE;
+typedef std::vector<PARTITION>  PARTITIONS_BASE;
 
-struct PACK_IMAGE
+PARTITION FirstPartition( "parameter", 0, 0x2000 );
+
+
+/**
+ * Struct PARAMETERS
+ * holds stuff from the parameter file.
+ */
+struct PARAMETERS
 {
-    uint32_t    version;
+    unsigned        version;
 
-    char        machine_model[0x22];
-    char        machine_id[0x1e];
-    char        manufacturer[0x38];
+    std::string     machine_model;
+    std::string     machine_id;
+    std::string     manufacturer;
 
-    uint32_t    num_package;
-    PACK_PART   packages[16];
-
-    uint32_t    num_partition;
-    PARTITION   partitions[16];
+    void Show()
+    {
+        printf( "version:%d.%d.%d  machine:%s  mfg:%s\n",
+            version >> 24,  0xff & (version >> 16),  0xffff & version,
+            machine_model.c_str(),
+            manufacturer.c_str()
+            );
+    }
 };
 
-static PACK_IMAGE package_image;
+
+struct PACKAGES : public PACKAGES_BASE
+{
+    int GetPackages( const char* package_file );
+
+    void Show()
+    {
+        printf( "num_packages:%zu\n", size() );
+
+        for( unsigned i=0; i < size();  ++i )
+            (*this)[i].Show();
+    }
+
+    PACKAGE* FindByName( const char* name )
+    {
+        for( unsigned i = 0; i < size(); ++i )
+        {
+            PACKAGE* pack = &(*this)[i];
+
+            if( strcmp( pack->name, name ) == 0 )
+                return pack;
+        }
+
+        return NULL;
+    }
+
+};
+
+
+struct PARTITIONS : public PARTITIONS_BASE
+{
+    void Show()
+    {
+        printf( "num_partitions:%zu\n", size() );
+
+        for( unsigned i=0;  i < size();  ++i )
+            (*this)[i].Show();
+    }
+
+    PARTITION* FindByName( const char* name )
+    {
+        for( unsigned i=0;  i < size();  ++i )
+        {
+            PARTITION* part = &(*this)[i];
+
+            if( !strcmp( part->name, name ) )
+                return part;
+        }
+
+        if( !strcmp( name, FirstPartition.name ) )
+        {
+            return &FirstPartition;
+        }
+
+        return NULL;
+    }
+};
+
+
+PARAMETERS  Parameters;
+
+PACKAGES    Packages;
+
+PARTITIONS  Partitions;
+
 
 int parse_partitions( char* str )
 {
-    char*   parts;
-    char*   part;
-    char*   token1 = NULL;
-    char*   ptr;
-
-    PARTITION* p_part;
-
-    int i;
-
-    parts = strchr( str, ':' );
+    char*   parts = strchr( str, ':' );
 
     if( parts )
     {
-        *parts = '\0';
-        parts++;
-        part = strtok_r( parts, ",", &token1 );
+        char*   token1 = NULL;
 
-        for( ; part; part = strtok_r( NULL, ",", &token1 ) )
+        ++parts;
+
+        char* tok = strtok_r( parts, ",", &token1 );
+
+        for( ; tok; tok = strtok_r( NULL, ",", &token1 ) )
         {
-            p_part = &(package_image.partitions[package_image.num_partition]);
+            int     i;
+            char*   ptr;
 
-            p_part->size = strtol( part, &ptr, 16 );
+            PARTITION   part;
+
+            part.size = strtol( tok, &ptr, 16 );
+
             ptr = strchr( ptr, '@' );
 
             if( !ptr )
                 continue;
 
-            ptr++;
-            p_part->start = strtol( ptr, &ptr, 16 );
+            ++ptr;
+            part.start = strtol( ptr, &ptr, 16 );
 
             for( ; *ptr && *ptr != '('; ptr++ )
                 ;
 
-            for( i = 0, ptr++; i < sizeof(p_part->name) && *ptr && *ptr != ')'; i++, ptr++ )
+            ++ptr;
+
+            for( i = 0; i < sizeof(part.name) && *ptr && *ptr != ')'; ++i )
             {
-                p_part->name[i] = *ptr;
+                part.name[i] = *ptr++;
             }
 
-            if( i < sizeof(p_part->name) )
-                p_part->name[i] = '\0';
+            if( i < sizeof(part.name) )
+                part.name[i] = '\0';
             else
-                p_part->name[i - 1] = '\0';
+                part.name[i - 1] = '\0';
 
-            package_image.num_partition++;
-        }
-
-        for( i = 0; i < package_image.num_partition; ++i )
-        {
-            p_part = &package_image.partitions[i];
+            Partitions.push_back( part );
         }
     }
 
@@ -374,53 +470,35 @@ int action_parse_key( char* key, char* value )
     if( strcmp( key, "FIRMWARE_VER" ) == 0 )
     {
         unsigned a, b, c;
+
         sscanf( value, "%d.%d.%d", &a, &b, &c );
-        package_image.version = (a << 24) + (b << 16) + c;
+        Parameters.version = ROM_VERSION(a,b,c);
     }
     else if( strcmp( key, "MACHINE_MODEL" ) == 0 )
     {
-        package_image.machine_model[sizeof(package_image.machine_model) - 1] = 0;
-        strncpy( package_image.machine_model, value,
-                sizeof(package_image.machine_model) );
-
-        if( package_image.machine_model[sizeof(package_image.machine_model) - 1] )
-            return -1;
+        Parameters.machine_model = value;
     }
     else if( strcmp( key, "MACHINE_ID" ) == 0 )
     {
-        package_image.machine_id[sizeof(package_image.machine_id) - 1] = 0;
-        strncpy( package_image.machine_id, value,
-                sizeof(package_image.machine_id) );
-
-        if( package_image.machine_id[sizeof(package_image.machine_id) - 1] )
-            return -1;
+        Parameters.machine_id = value;
     }
     else if( strcmp( key, "MANUFACTURER" ) == 0 )
     {
-        package_image.manufacturer[sizeof(package_image.manufacturer) - 1] = 0;
-        strncpy( package_image.manufacturer, value,
-                sizeof(package_image.manufacturer) );
-
-        if( package_image.manufacturer[sizeof(package_image.manufacturer) - 1] )
-            return -1;
+        Parameters.manufacturer = value;
     }
     else if( strcmp( key, "CMDLINE" ) == 0 )
     {
-        char*   param, * token1 = NULL;
-        char*   param_key, * param_value;
-
-
-        param = strtok_r( value, " ", &token1 );
+        char*   token1 = NULL;
+        char*   param = strtok_r( value, " ", &token1 );
 
         while( param )
         {
-            param_key = param;
-            param_value = strchr( param, '=' );
+            char*   param_key = param;
+            char*   param_value = strchr( param, '=' );
 
             if( param_value )
             {
-                *param_value = '\0';
-                param_value++;
+                *param_value++ = '\0';
 
                 if( strcmp( param_key, "mtdparts" ) == 0 )
                 {
@@ -468,6 +546,10 @@ int parse_parameter( const char* fname )
 
         endp[1] = 0;
 
+        // skip UTF-8 BOM
+        if( startp[0] == (char)0xEF && startp[1] == (char)0xBB && startp[2] == (char)0xBF)
+            startp += 3;
+
         if( *startp == '#' || *startp == 0 )
             continue;
 
@@ -496,73 +578,27 @@ int parse_parameter( const char* fname )
 }
 
 
-static PARTITION first_partition =
-{
-    "parameter",
-    0,
-    0x2000
-};
-
-
-PARTITION* find_partition_byname( const char* name )
-{
-    PARTITION* p_part;
-
-    for( int i = package_image.num_partition - 1; i >= 0; i-- )
-    {
-        p_part = &package_image.partitions[i];
-
-        if( strcmp( p_part->name, name ) == 0 )
-            return p_part;
-    }
-
-    if( strcmp( name, first_partition.name ) == 0 )
-    {
-        return &first_partition;
-    }
-
-    return NULL;
-}
-
-
-PACK_PART* find_package_byname( const char* name )
-{
-    PACK_PART* p_pack;
-
-    for( int i = package_image.num_partition - 1; i >= 0; i-- )
-    {
-        p_pack = &package_image.packages[i];
-
-        if( strcmp( p_pack->name, name ) == 0 )
-            return p_pack;
-    }
-
-    return NULL;
-}
-
-
 void append_package( const char* name, const char* path )
 {
-    PARTITION*   p_part;
-    PACK_PART*   p_pack = &package_image.packages[package_image.num_package];
+    PACKAGE pack;
 
-    strncpy( p_pack->name, name, sizeof(p_pack->name) );
-    strncpy( p_pack->filename, path, sizeof(p_pack->filename) );
+    strncpy( pack.name, name, sizeof(pack.name) );
+    strncpy( pack.fullpath, path, sizeof(pack.fullpath) );
 
-    p_part = find_partition_byname( name );
+    PARTITION* part = Partitions.FindByName( name );
 
-    if( p_part )
+    if( part )
     {
-        p_pack->nand_addr   = p_part->start;
-        p_pack->nand_size   = p_part->size;
+        pack.image_offset = part->start;
+        pack.image_size   = part->size;
     }
     else
     {
-        p_pack->nand_addr   = (unsigned) -1;
-        p_pack->nand_size   = 0;
+        pack.image_offset = (unsigned) -1;
+        pack.image_size   = 0;
     }
 
-    package_image.num_package++;
+    Packages.push_back( pack );
 }
 
 
@@ -636,7 +672,7 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
     char    buf[2048];      // must be 2048 for param part
     size_t  readlen;
 
-    pack->pos = ftell( fp_out );
+    pack->image_offset = ftell( fp_out );
 
     FILE*   fp_in = fopen( path, "rb" );
 
@@ -666,8 +702,8 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
         memset( buf + readlen, 0, sizeof(buf) - readlen );
 
         fwrite( buf, 1, sizeof(buf), fp_out );
-        pack->size += readlen;
-        pack->padded_size += sizeof(buf);
+        pack->file_size += readlen;
+        pack->image_size += sizeof(buf);
     }
     else
     {
@@ -681,8 +717,8 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
                 memset( buf + readlen, 0, sizeof(buf) - readlen );
 
             fwrite( buf, 1, sizeof(buf), fp_out );
-            pack->size += readlen;
-            pack->padded_size += sizeof(buf);
+            pack->file_size += readlen;
+            pack->image_size += sizeof(buf);
         } while( !feof( fp_in ) );
     }
 
@@ -694,7 +730,6 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
 
 void append_crc( FILE* fp )
 {
-    uint32_t crc = 0;
     off_t file_len = 0;
 
     fseeko( fp, 0, SEEK_END );
@@ -707,10 +742,102 @@ void append_crc( FILE* fp )
 
     printf( "Adding CRC...\n" );
 
-    crc = filestream_crc( fp, file_len );
+    uint32_t crc = filestream_crc( fp, file_len );
 
     fseek( fp, 0, SEEK_END );
     fwrite( &crc, 1, sizeof(crc), fp );
+}
+
+
+int compute_cmdline( const char* srcdir )
+{
+    char    buf[4096];
+
+    snprintf( buf, sizeof(buf), "%s/%s", srcdir, "package-file" );
+
+    if( get_packages( buf ) )
+        return -1;
+
+    struct stat st;
+
+    unsigned flash_offset = 0;
+
+    fprintf( stderr, "fragment for CMDLINE:\n" );
+
+    printf( "mtdparts=rk29xxnand:" );
+
+    for( unsigned i=0, out=0; i < Packages.size();  ++i )
+    {
+        stat( Packages[i].fullpath, &st );
+
+        // pad for a bigger boot loader that might be programmed/stuffed via dd
+        if( !strcmp( Packages[i].name, "bootloader" ) )
+            st.st_size += 1024*1024;
+
+        Packages[i].image_size   = ((st.st_size + 511)/512) * 512 ;
+
+        Packages[i].image_offset = flash_offset;
+
+        flash_offset += Packages[i].image_size;
+
+        // These should all be put early on in your package-file so that they
+        // can come before the first visible partition after the 4mbyte boundary.
+
+        if(    !strcmp( Packages[i].name, "SELF" )
+            || !strcmp( Packages[i].name, "package-file" )
+            || !strcmp( Packages[i].name, "parameter" )
+            || !strcmp( Packages[i].name, "update-script" )
+            || !strcmp( Packages[i].name, "RESERVED" )
+            || !strcmp( Packages[i].name, "recover-script" )
+            /*
+            || !strcmp( Packages[i].name, "bootloader" )
+            || !strcmp( Packages[i].name, "backup" )
+            || !strcmp( Packages[i].name, "misc" )
+            || !strcmp( Packages[i].name, "recovery" )
+            */
+          )
+        {
+            continue;
+        }
+
+        if( !out )
+        {
+            // first exported partition should be @ >= 4 Mbyte
+            if( Packages[i].image_offset < 0x2000 * 512 )
+            {
+                Packages[i].image_offset = 0x2000 * 512;
+                flash_offset = Packages[i].image_offset + Packages[i].image_size;
+            }
+        }
+        else
+            printf( "," );
+
+        if( i == Packages.size()-1 )
+        {
+            // last partition is set to expand on first boot, so
+            // make sure of this partition name in your "package-file", should
+            // be linuxroot for a linux ROM.
+            printf( "-@0x%08x(%s)",
+                Packages[i].image_offset / 512,
+                Packages[i].name
+                );
+        }
+        else
+        {
+            // 0x00008000@0x00002000(resource),0x00008000@0x0000A000(boot),-@0x00036000(linuxroot)
+            printf( "0x%08x@0x%08x(%s)",
+                (Packages[i].image_size + 512 - 1) / 512,
+                Packages[i].image_offset / 512,
+                Packages[i].name
+                );
+        }
+
+        ++out;      // output count
+    }
+
+    printf( "\n" );
+
+    return 0;
 }
 
 
@@ -741,38 +868,43 @@ int pack_update( const char* srcdir, const char* dstfile )
         goto pack_failed;
     }
 
+    // put out an inaccurate place holder, come back later and update it.
     fwrite( &header, sizeof(header), 1, fp );
 
-    for( int i = 0; i < package_image.num_package; ++i )
+    for( unsigned i=0;  i < Packages.size();  ++i )
     {
-        strcpy( header.parts[i].name, package_image.packages[i].name );
-        strcpy( header.parts[i].filename, package_image.packages[i].filename );
-        header.parts[i].nand_addr   = package_image.packages[i].nand_addr;
-        header.parts[i].nand_size   = package_image.packages[i].nand_size;
+        strcpy( header.parts[i].name, Packages[i].name );
+        strcpy( header.parts[i].fullpath, Packages[i].fullpath );
 
-        if( strcmp( package_image.packages[i].filename, "SELF" ) == 0 )
+        header.parts[i].image_offset = Packages[i].image_offset;
+        header.parts[i].image_size   = Packages[i].image_size;
+
+        if( !strcmp( Packages[i].fullpath, "SELF" ) )
             continue;
 
-        snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].filename );
+        if( !strcmp( Packages[i].fullpath, "RESERVED" ) )
+            continue;
+
+        snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].fullpath );
         printf( "Adding file: %s\n", buf );
         import_package( fp, &header.parts[i], buf );
     }
 
     memcpy( header.magic, "RKAF", sizeof(header.magic) );
-    strcpy( header.manufacturer, package_image.manufacturer );
-    strcpy( header.model, package_image.machine_model );
-    strcpy( header.id, package_image.machine_id );
+    strcpy( header.manufacturer, Parameters.manufacturer.c_str() );
+    strcpy( header.model, Parameters.machine_model.c_str() );
+    strcpy( header.id, Parameters.machine_id.c_str() );
 
     header.length = ftell( fp );
-    header.num_parts = package_image.num_package;
-    header.version = package_image.version;
+    header.num_parts = Packages.size();
+    header.version = Parameters.version;
 
     for( int i = header.num_parts - 1; i >= 0; --i )
     {
-        if( strcmp( header.parts[i].filename, "SELF" ) == 0 )
+        if( strcmp( header.parts[i].fullpath, "SELF" ) == 0 )
         {
-            header.parts[i].size = header.length + 4;
-            header.parts[i].padded_size = (header.parts[i].size + 511) / 512 * 512;
+            header.parts[i].file_size  = header.length + 4;
+            header.parts[i].image_size = (header.parts[i].file_size + 511) / 512 * 512;
         }
     }
 
@@ -801,11 +933,14 @@ pack_failed:
 void usage()
 {
     printf( "USAGE:\n"
-            "\t%s <-pack|-unpack> <Src> <Dest>\n\n"
+            "\t%s <-pack | -unpack> <src_dir> <out_dir>\n"
+            "\t\t or\n"
+            "\t%s -CMDLINE <src_dir>\n\n"
             "Examples:\n"
-            "\t%s -pack <src_dir> update.img\tpack files\n"
-            "\t%s -unpack update.img <out_dir>\tunpack files\n",
-            appname, appname, appname
+            "\t%s -pack src_dir update.img\tpack files\n"
+            "\t%s -unpack update.img out_dir\tunpack files\n"
+            "\t%s -CMDLINE src_dir > cmdline\tcapture CMDLINE fragment into cmdline\n",
+            appname, appname, appname, appname, appname
             );
 }
 
@@ -838,6 +973,7 @@ int main( int argc, char** argv )
         else
             printf( "Packing failed!\n" );
     }
+
     else if( strcmp( argv[1], "-unpack" ) == 0 && argc == 4 )
     {
         ret = unpack_update( argv[2], argv[3] );
@@ -847,6 +983,12 @@ int main( int argc, char** argv )
         else
             printf( "UnPack failed!\n" );
     }
+
+    else if( strcmp( argv[1], "-CMDLINE" ) == 0 && argc == 3 )
+    {
+        ret = compute_cmdline( argv[2] );
+    }
+
     else
     {
         usage();

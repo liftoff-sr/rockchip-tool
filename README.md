@@ -3,12 +3,14 @@ rockchip-tools
 
 RockChip tools for RK29, RK30, and RK32 boards.
 
-Converted to C++ from C to preserve my sanity.
+1-Jan-2016
+==========
+Converted to C++ from C to preserve my sanity.  I don't understand C.
+That is, I don't understand why someone would use it for tools like this.
 
-Many fixes, afptool works better, especially on files it created.
-For files it did not create, it is deficient in the area of understanding
-UPDATE_PART::padded_size.
+Many fixes, afptool works better, especially on files it created.  It also has
+a new -CMDLINE mode which outputs the CMDLINE fragment for the partition table setup
+in the parameter file.
 
-So do not expect afptool to be able to unpack update.img files created by other
-tools at this time.  However, unless you get an error message, it probably worked.
+Better error messages.
 
