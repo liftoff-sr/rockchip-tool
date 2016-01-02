@@ -50,6 +50,12 @@
 const char* appname;
 
 
+/// Round up to nearest multiple of flash page size of 512
+inline unsigned round_up( unsigned aSize )
+{
+    return ((aSize + 511)/512) * 512;
+}
+
 
 uint32_t filestream_crc( FILE* fs, size_t stream_len )
 {
@@ -82,7 +88,7 @@ int create_dir( char* dir )
 
         if( mkdir( dir, 0755 ) != 0 && errno != EEXIST )
         {
-            printf( "Can't create directory: %s\n", dir );
+            fprintf( stderr, "%s: can't create directory: %s\n", __func__, dir );
             return -1;
         }
 
@@ -101,7 +107,7 @@ int extract_file( FILE* fp, off_t offset, size_t len, const char* fullpath )
 
     if( !fp_out )
     {
-        printf( "Can't open/create file: %s\n", fullpath );
+        fprintf( stderr, "%s: can't open/create file: %s\n", __func__, fullpath );
         return -1;
     }
 
@@ -114,7 +120,7 @@ int extract_file( FILE* fp, off_t offset, size_t len, const char* fullpath )
 
         if( ask != got )
         {
-            printf(
+            fprintf( stderr,
                 "extraction of file '%s' is bad; insufficient length in container image file\n"
                 "ask=%zu got=%zu\n",
                 fullpath,
@@ -161,7 +167,10 @@ int unpack_update( const char* srcfile, const char* dstdir )
 
     if( filesize - 4 < header.length )
     {
-        printf( "update_header has length greater than file's length, cannot check crc\n" );
+        fprintf( stderr,
+            "%s: update_header has length greater than file's length, cannot check crc\n",
+            __func__
+            );
     }
     else
     {
@@ -234,8 +243,8 @@ int unpack_update( const char* srcfile, const char* dstdir )
 
             if( memcmp( part->name, "parameter", 9 ) == 0 )
             {
-                part->image_offset   += 8;
-                part->file_size  -= 12;
+                part->image_offset += 8;
+                part->file_size -= 12;
             }
 
             snprintf( dir, sizeof(dir), "%s/%s", dstdir, part->fullpath );
@@ -283,9 +292,9 @@ struct PACKAGE
         memset( this, 0, sizeof(*this) );
     }
 
-    void Show()
+    void Show( FILE* fp )
     {
-        printf( "name:%-34s image_offset:0x%08x  image_size:0x%08x fullpath:%s\n",
+        fprintf( fp, "name:%-34s image_offset:0x%08x  image_size:0x%08x fullpath:%s\n",
             name, image_offset, image_size, fullpath );
     }
 };
@@ -312,9 +321,9 @@ struct PARTITION
         strncpy( name, aName, sizeof(name) );
     }
 
-    void Show()
+    void Show( FILE* fp )
     {
-        printf( "name:%-34s start:0x%08x size:0x%08x\n",
+        fprintf( fp, "name:%-34s start:0x%08x size:0x%08x\n",
             name, start, size );
     }
 };
@@ -337,9 +346,9 @@ struct PARAMETERS
     std::string     machine_id;
     std::string     manufacturer;
 
-    void Show()
+    void Show( FILE* fp )
     {
-        printf( "version:%d.%d.%d  machine:%s  mfg:%s\n",
+        fprintf( fp, "version:%d.%d.%d  machine:%s  mfg:%s\n",
             version >> 24,  0xff & (version >> 16),  0xffff & version,
             machine_model.c_str(),
             manufacturer.c_str()
@@ -348,16 +357,16 @@ struct PARAMETERS
 };
 
 
-struct PACKAGES : public PACKAGES_BASE
+struct PACKAGES : public PACKAGES_BASE      // a std::vector
 {
     int GetPackages( const char* package_file );
 
-    void Show()
+    void Show( FILE* fp )
     {
-        printf( "num_packages:%zu\n", size() );
+        fprintf( fp, "num_packages:%zu\n", size() );
 
         for( unsigned i=0; i < size();  ++i )
-            (*this)[i].Show();
+            (*this)[i].Show( fp );
     }
 
     PACKAGE* FindByName( const char* name )
@@ -376,14 +385,14 @@ struct PACKAGES : public PACKAGES_BASE
 };
 
 
-struct PARTITIONS : public PARTITIONS_BASE
+struct PARTITIONS : public PARTITIONS_BASE  // a std::vector
 {
-    void Show()
+    void Show( FILE* fp )
     {
-        printf( "num_partitions:%zu\n", size() );
+        fprintf( fp, "num_partitions:%zu\n", size() );
 
         for( unsigned i=0;  i < size();  ++i )
-            (*this)[i].Show();
+            (*this)[i].Show( fp );
     }
 
     PARTITION* FindByName( const char* name )
@@ -578,11 +587,33 @@ int parse_parameter( const char* fname )
 }
 
 
-void append_package( const char* name, const char* path )
+int append_package( const char* name, const char* path )
 {
     PACKAGE pack;
 
-    strncpy( pack.name, name, sizeof(pack.name) );
+    int     excess;
+
+    excess = strlen( name ) - sizeof( pack.name );
+    if( excess > 0 )
+    {
+        fprintf( stderr, "%s: package name '%s' is too long by %d bytes\n",
+            __func__, name, excess
+            );
+
+        return -4;
+    }
+    strncpy( pack.name, name, sizeof( pack.name ) );
+
+    excess = strlen( path ) - sizeof( pack.fullpath );
+    if( excess > 0 )
+    {
+        fprintf( stderr, "%s: package fullpath '%s' is too long by %d bytes\n",
+            __func__, path, excess
+            );
+
+        return -5;
+    }
+
     strncpy( pack.fullpath, path, sizeof(pack.fullpath) );
 
     PARTITION* part = Partitions.FindByName( name );
@@ -599,32 +630,37 @@ void append_package( const char* name, const char* path )
     }
 
     Packages.push_back( pack );
+
+    return 0;
 }
 
 
 int get_packages( const char* fname )
 {
+    int     ret = 0;
     char    line[4096];
-    char*   startp;
-    char*   endp;
-    char*   name;
-    char*   path;
 
     FILE*   fp = fopen( fname, "r" );
 
     if( !fp )
     {
-        printf( "Can't open file '%s'\n", fname );
+        fprintf( stderr, "%s: can't open file '%s'\n", __func__, fname );
+        fprintf( stderr, "Every project needs a 'package-list' file in the source directory\n" );
         return -1;
     }
 
     while( fgets( line, sizeof(line), fp ) != NULL )
     {
-        startp = line;
-        endp = line + strlen( line ) - 1;
+        char*   startp = line;
+        char*   endp = line + strlen( line ) - 1;
 
         if( *endp != '\n' && *endp != '\r' && !feof( fp ) )
+        {
+            fprintf( stderr,
+                "File '%s' has a line which is too long for me, sorry!\n", fname );
+            ret = -3;
             break;
+        }
 
         // trim line
         while( isspace( *startp ) )
@@ -638,7 +674,7 @@ int get_packages( const char* fname )
         if( *startp == '#' || *startp == 0 )
             continue;
 
-        name = startp;
+        char* name = startp;
 
         while( *startp && *startp != ' ' && *startp != '\t' )
             startp++;
@@ -649,21 +685,16 @@ int get_packages( const char* fname )
             startp++;
         }
 
-        path = startp;
+        char* path = startp;
 
-        append_package( name, path );
-    }
-
-    if( !feof( fp ) )
-    {
-        printf( "File '%s' has a long which is too long for me, sorry!\n", fname );
-        fclose( fp );
-        return -3;
+        ret = append_package( name, path );
+        if( ret )
+            break;      // append_package() did its own UI error reporting.
     }
 
     fclose( fp );
 
-    return 0;
+    return ret;
 }
 
 
@@ -760,7 +791,7 @@ int compute_cmdline( const char* srcdir )
 
     struct stat st;
 
-    unsigned flash_offset = 0;
+    unsigned flash_offset = 0;      // start flash allocation at zero.
 
     fprintf( stderr, "fragment for CMDLINE:\n" );
 
@@ -770,18 +801,33 @@ int compute_cmdline( const char* srcdir )
     {
         stat( Packages[i].fullpath, &st );
 
-        // pad for a bigger boot loader that might be programmed/stuffed via dd
-        if( !strcmp( Packages[i].name, "bootloader" ) )
-            st.st_size += 1024*1024;
+        /*
 
-        Packages[i].image_size   = ((st.st_size + 511)/512) * 512 ;
+        Only some of these loop iterations of calculations will be publicly
+        visible in this function's output. While all uncommented lines coming
+        from the "package-list" file are are bootloader partitions, only some of
+        them will also be linux partitions.
+
+        That means things don't get critical until the first bootloader
+        partition which is also going to be a linux partition. We set the
+        starting flash byte offset of the first linux boot partition to be AT
+        LEAST 4 MBytes. For bootloader partitions which are not linux
+        partitions, it makes sense to have them be earlier in your package-list
+        file than the first linux parition.
+
+        Both the flash offsets and the partition sizes are in flash page size
+        units of 512 bytes.
+
+        */
+
+        Packages[i].image_size   = round_up( st.st_size );
 
         Packages[i].image_offset = flash_offset;
 
         flash_offset += Packages[i].image_size;
 
-        // These should all be put early on in your package-file so that they
-        // can come before the first visible partition after the 4mbyte boundary.
+        // These bootloader partitions can be anywhere in the sequence,
+        // but are not exported as linux partitions.
 
         if(    !strcmp( Packages[i].name, "SELF" )
             || !strcmp( Packages[i].name, "package-file" )
@@ -797,6 +843,7 @@ int compute_cmdline( const char* srcdir )
             */
           )
         {
+            // Do not output these into the CMDLINE string fragment.
             continue;
         }
 
@@ -806,19 +853,23 @@ int compute_cmdline( const char* srcdir )
             if( Packages[i].image_offset < 0x2000 * 512 )
             {
                 Packages[i].image_offset = 0x2000 * 512;
+
+                // plan for the next linux partition after this one.
                 flash_offset = Packages[i].image_offset + Packages[i].image_size;
             }
         }
         else
             printf( "," );
 
+        D( Packages[i].Show( stderr ); )
+
         if( i == Packages.size()-1 )
         {
-            // last partition is set to expand on first boot, so
-            // make sure of this partition name in your "package-file", should
-            // be linuxroot for a linux ROM.
+            // The last linux partition is set to expand on first boot using the
+            // '-' size field, so make sure of this partition name in your
+            // "package-file".  For linux it's sensibly "linuxroot".
             printf( "-@0x%08x(%s)",
-                Packages[i].image_offset / 512,
+                Packages[i].image_offset / 512, // already a multiple of 512 here.
                 Packages[i].name
                 );
         }
@@ -826,13 +877,13 @@ int compute_cmdline( const char* srcdir )
         {
             // 0x00008000@0x00002000(resource),0x00008000@0x0000A000(boot),-@0x00036000(linuxroot)
             printf( "0x%08x@0x%08x(%s)",
-                (Packages[i].image_size + 512 - 1) / 512,
+                Packages[i].image_size / 512,   // already a multiple of 512 here
                 Packages[i].image_offset / 512,
                 Packages[i].name
                 );
         }
 
-        ++out;      // output count
+        ++out;      // linux partition output count
     }
 
     printf( "\n" );
@@ -843,7 +894,7 @@ int compute_cmdline( const char* srcdir )
 
 int pack_update( const char* srcdir, const char* dstfile )
 {
-    UPDATE_HEADER header;
+    UPDATE_HEADER header;   // constructor zeros it.
 
     char    buf[4096];
 
@@ -864,17 +915,17 @@ int pack_update( const char* srcdir, const char* dstfile )
 
     if( !fp )
     {
-        printf( "Can't open file \"%s\": %s\n", dstfile, strerror( errno ) );
+        fprintf( stderr, "Can't open file \"%s\": %s\n", dstfile, strerror( errno ) );
         goto pack_failed;
     }
 
-    // put out an inaccurate place holder, come back later and update it.
+    // put out an inaccurate place holder, planning to come back later and update it.
     fwrite( &header, sizeof(header), 1, fp );
 
     for( unsigned i=0;  i < Packages.size();  ++i )
     {
-        strcpy( header.parts[i].name, Packages[i].name );
-        strcpy( header.parts[i].fullpath, Packages[i].fullpath );
+        strncpy( header.parts[i].name, Packages[i].name, sizeof(header.parts[i].name) );
+        strncpy( header.parts[i].fullpath, Packages[i].fullpath, sizeof(header.parts[i].fullpath) );
 
         header.parts[i].image_offset = Packages[i].image_offset;
         header.parts[i].image_size   = Packages[i].image_size;
@@ -887,13 +938,14 @@ int pack_update( const char* srcdir, const char* dstfile )
 
         snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].fullpath );
         printf( "Adding file: %s\n", buf );
+
         import_package( fp, &header.parts[i], buf );
     }
 
     memcpy( header.magic, "RKAF", sizeof(header.magic) );
-    strcpy( header.manufacturer, Parameters.manufacturer.c_str() );
-    strcpy( header.model, Parameters.machine_model.c_str() );
-    strcpy( header.id, Parameters.machine_id.c_str() );
+    strncpy( header.manufacturer, Parameters.manufacturer.c_str(), sizeof(header.manufacturer) );
+    strncpy( header.model, Parameters.machine_model.c_str(), sizeof(header.model) );
+    strncpy( header.id, Parameters.machine_id.c_str(), sizeof(header.id) );
 
     header.length = ftell( fp );
     header.num_parts = Packages.size();
@@ -904,7 +956,7 @@ int pack_update( const char* srcdir, const char* dstfile )
         if( strcmp( header.parts[i].fullpath, "SELF" ) == 0 )
         {
             header.parts[i].file_size  = header.length + 4;
-            header.parts[i].image_size = (header.parts[i].file_size + 511) / 512 * 512;
+            header.parts[i].image_size = round_up( header.parts[i].file_size );
         }
     }
 
@@ -947,7 +999,7 @@ void usage()
 
 int main( int argc, char** argv )
 {
-    int ret = 0;
+    int ret = EXIT_SUCCESS;
 
     appname = strrchr( argv[0], '/' );;
 
@@ -961,7 +1013,7 @@ int main( int argc, char** argv )
     if( argc < 3 )
     {
         usage();
-        return 1;
+        return EXIT_FAILURE;
     }
 
     if( strcmp( argv[1], "-pack" ) == 0 && argc == 4 )
@@ -992,7 +1044,7 @@ int main( int argc, char** argv )
     else
     {
         usage();
-        ret = 2;
+        ret = EXIT_FAILURE;
     }
 
     return ret;
