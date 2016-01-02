@@ -834,12 +834,6 @@ int compute_cmdline( const char* srcdir )
     {
         stat( Packages[i].fullpath, &st );
 
-        // Add any padding requested in the PAD_MAP to the end of the parition.
-        // Might be useful for some parititions, but since you have access to
-        // this tool you can tweak this according to your needs.  Not mandatory for me.
-//      st.st_size += partition_padding( Packages[i].name );
-
-
         /*
 
         Only some of these loop iterations of calculations will be publicly
@@ -858,6 +852,12 @@ int compute_cmdline( const char* srcdir )
         units of 512 bytes.
 
         */
+
+
+        // Add any padding requested in the PAD_MAP to the end of the partition.
+        // Might be useful for some parititions, but since you have access to
+        // this tool you can tweak this according to your needs.  Not mandatory for me.
+//      st.st_size += partition_padding( Packages[i].name );
 
         Packages[i].image_size   = round_up( st.st_size );
 
