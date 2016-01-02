@@ -14,3 +14,5 @@ in the parameter file.
 
 Better error messages.
 
+CMake build system, removed Makefile.
+
