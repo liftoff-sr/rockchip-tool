@@ -41,7 +41,7 @@
 #include "rkafp.h"
 #include "rkrom.h"
 
-#define VERSION     "Jan  2 2016"
+#define VERSION     "Jan  4 2016"
 
 
 #if defined(DEBUG)
@@ -307,20 +307,19 @@ struct PACKAGE
 struct PARTITION
 {
     char        name[32];
-    uint32_t    start;
-    uint32_t    size;
-
+    unsigned    page_start;         // at what starting page (page=512)
+    unsigned    page_count;         // how many 512 pages
 
     PARTITION()
     {
         memset( name, 0, sizeof(name) );
-        start = 0;
-        size  = 0;
+        page_start = 0;
+        page_count = 0;
     }
 
-    PARTITION( const char* aName, unsigned aStart, unsigned aSize ) :
-        start( aStart ),
-        size( aSize )
+    PARTITION( const char* aName, unsigned aPageStart, unsigned aPageCount ) :
+        page_start( aPageStart ),
+        page_count( aPageCount )
     {
         strncpy( name, aName, sizeof(name) );
     }
@@ -328,7 +327,7 @@ struct PARTITION
     void Show( FILE* fp )
     {
         fprintf( fp, "name:%-34s start:0x%08x size:0x%08x\n",
-            name, start, size );
+            name, page_start, page_count );
     }
 };
 
@@ -445,7 +444,7 @@ int parse_partitions( char* str )
 
             PARTITION   part;
 
-            part.size = strtol( tok, &ptr, 16 );
+            part.page_count = strtoul( tok, &ptr, 0 );
 
             ptr = strchr( ptr, '@' );
 
@@ -453,7 +452,7 @@ int parse_partitions( char* str )
                 continue;
 
             ++ptr;
-            part.start = strtol( ptr, &ptr, 16 );
+            part.page_start = strtoul( ptr, &ptr, 0 );
 
             for( ; *ptr && *ptr != '('; ptr++ )
                 ;
@@ -624,8 +623,8 @@ int append_package( const char* name, const char* path )
 
     if( part )
     {
-        pack.image_offset = part->start;
-        pack.image_size   = part->size;
+        pack.image_offset = part->page_start;
+        pack.image_size   = part->page_count;
     }
     else
     {
@@ -784,33 +783,54 @@ void append_crc( FILE* fp )
 }
 
 
-#if 0
-unsigned partition_padding( const char* aPartitionName )
+typedef std::map< std::string, unsigned >   PAD_MAP;
+
+static unsigned find_in_map( const char* aName, const PAD_MAP& aMap )
 {
-    typedef std::map< const char*, unsigned >   PAD_MAP;
+    PAD_MAP::const_iterator it = aMap.find( aName );
 
-    // a table of bootloader partion names and pad sizes to use
-    // in producing the kernel CMDLINE line string.  The PAD
-    // numeric value is the gap to leave beyond the rounded up
-    // size found by examining the size of the file going into
-    // that partition.
-    static const PAD_MAP dictionary = {
-        { "bootloader",     1*1024*1024 },  // 1*1024*1024 = a megabyte
-        { "parameter",      1*1024*1024 },
-        { "recover-script", 1*1024*1024 },
-        { "resource",       5*1024*1024 },
-    };
-
-    PAD_MAP::const_iterator it = dictionary.find( aPartitionName );
-
-    // return value is in bytes, not flash pages.
-
-    if( it == dictionary.end() )
+    if( it == aMap.end() )
         return 0;
 
     return it->second;
 }
-#endif
+
+
+// convert bytes to 512 byte pages
+#define BYTES2PAGES(x)      unsigned((uint64_t(x)+511)/512)
+
+unsigned partition_padding( unsigned aSize, const char* aPartitionName )
+{
+    // tables of bootloader partion names and sizes
+
+    // minimums:
+    // partition may not be smaller than this.
+    static const PAD_MAP minimums = {
+        { "bootloader",     BYTES2PAGES(16*1024*1024) },            // 1*1024*1024 = a megabyte
+        { "boot",           BYTES2PAGES(16*1024*1024) },
+
+        // This is a hack for my 32 gbyte emmc, gives me a 6 gbyte swap
+        // partition without having to supply an image file.
+        { "swap",           BYTES2PAGES(6*1024*1024*1024ULL) },     // 1024*1024*1024 = gigabyte
+    };
+
+    // paddings:
+    // to add to the end of respective parition's input file size.
+    static const PAD_MAP paddings = {
+        { "bootloader",     BYTES2PAGES(1*1024*1024) },
+        { "recover-script", BYTES2PAGES(1*1024*1024) },
+        { "linuxroot",      BYTES2PAGES(5*1024*1024) },
+    };
+
+    aSize += find_in_map( aPartitionName, paddings );
+
+    unsigned minimum = find_in_map( aPartitionName, minimums );
+
+    if( aSize < minimum )
+        aSize = minimum;
+
+    return aSize;           // return value is in flash pages.
+}
 
 
 int compute_cmdline( const char* srcdir )
@@ -824,7 +844,7 @@ int compute_cmdline( const char* srcdir )
 
     struct stat st;
 
-    unsigned flash_offset = 0;      // start flash allocation at zero.
+    unsigned flash_offset = 0x2000;     // start of flash allocation in pages (512 bytes)
 
     fprintf( stderr, "fragment for CMDLINE:\n" );
 
@@ -833,6 +853,8 @@ int compute_cmdline( const char* srcdir )
     for( unsigned i=0, out=0; i < Packages.size();  ++i )
     {
         stat( Packages[i].fullpath, &st );
+
+        unsigned file_pages = BYTES2PAGES( st.st_size );
 
         /*
 
@@ -853,52 +875,16 @@ int compute_cmdline( const char* srcdir )
 
         */
 
+        file_pages += partition_padding( file_pages, Packages[i].name );
 
-        // Add any padding requested in the PAD_MAP to the end of the partition.
-        // Might be useful for some parititions, but since you have access to
-        // this tool you can tweak this according to your needs.  Not mandatory for me.
-//      st.st_size += partition_padding( Packages[i].name );
-
-        Packages[i].image_size   = round_up( st.st_size );
+        Packages[i].image_size   = file_pages;
 
         Packages[i].image_offset = flash_offset;
 
         flash_offset += Packages[i].image_size;
 
-        // These bootloader partitions can be anywhere in the sequence,
-        // but are not exported as linux partitions.
 
-        if(    !strcmp( Packages[i].name, "SELF" )
-            || !strcmp( Packages[i].name, "package-file" )
-            || !strcmp( Packages[i].name, "parameter" )
-            || !strcmp( Packages[i].name, "update-script" )
-            || !strcmp( Packages[i].name, "RESERVED" )
-            || !strcmp( Packages[i].name, "recover-script" )
-            /*
-            || !strcmp( Packages[i].name, "bootloader" )
-            || !strcmp( Packages[i].name, "backup" )
-            || !strcmp( Packages[i].name, "misc" )
-            || !strcmp( Packages[i].name, "recovery" )
-            */
-          )
-        {
-            // Do not output these into the CMDLINE string fragment.
-            continue;
-        }
-
-        if( !out )
-        {
-            // First exported partition should be @ >= 4 Mbyte.  Leave
-            // a gap below this if we are not already over this minimum.
-            if( Packages[i].image_offset < 0x2000 * 512 )
-            {
-                Packages[i].image_offset = 0x2000 * 512;
-
-                // Plan for the next linux partition after this one.
-                flash_offset = Packages[i].image_offset + Packages[i].image_size;
-            }
-        }
-        else
+        if( out )
             printf( "," );
 
         D( Packages[i].Show( stderr ); )
@@ -908,17 +894,17 @@ int compute_cmdline( const char* srcdir )
             // The last linux partition is set to expand on first boot using the
             // '-' size field, so make sure of this partition name in your
             // "package-file".  For linux it's sensibly "linuxroot".
-            printf( "-@0x%08x(%s)",
-                Packages[i].image_offset / 512, // already a multiple of 512 here.
+            printf( "-@0x%x(%s)",
+                Packages[i].image_offset,   // already in pages
                 Packages[i].name
                 );
         }
         else
         {
             // 0x00008000@0x00002000(resource),0x00008000@0x0000A000(boot),-@0x00036000(linuxroot)
-            printf( "0x%08x@0x%08x(%s)",
-                Packages[i].image_size / 512,   // already a multiple of 512 here
-                Packages[i].image_offset / 512,
+            printf( "0x%x@0x%x(%s)",
+                Packages[i].image_size,     // already in pages
+                Packages[i].image_offset,
                 Packages[i].name
                 );
         }
@@ -977,7 +963,7 @@ int pack_update( const char* srcdir, const char* dstfile )
             continue;
 
         snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].fullpath );
-        printf( "Adding file: %s\n", buf );
+        printf( "Adding bootloader partition: %-24s  using: %s\n", header.parts[i].name, buf );
 
         import_package( fp, &header.parts[i], buf );
     }
