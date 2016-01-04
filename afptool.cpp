@@ -856,24 +856,11 @@ int compute_cmdline( const char* srcdir )
 
         unsigned file_pages = BYTES2PAGES( st.st_size );
 
-        /*
-
-        Only some of these loop iterations of calculations will be publicly
-        visible in this function's output. While all uncommented lines coming
-        from the "package-list" file are bootloader partitions, only some of
-        them will also be linux partitions.
-
-        That means things don't get critical until the first bootloader
-        partition which is also going to be a linux partition. We set the
-        starting flash byte offset of the first linux boot partition to be AT
-        LEAST at the 4 MByte boundary or higher. For bootloader partitions which
-        are not linux partitions, it makes sense to have them be earlier in your
-        package-list file than the first linux parition.
-
-        Both the flash offsets and the partition sizes are in flash page size
-        units of 512 bytes.
-
-        */
+        // The contents of the package-list file drive this loop.
+        // All offsets and sizes are in units of 512 bytes, which I call pages
+        // here (but that may not actually be the flash page size).  Here a
+        // page is defined as 512 bytes, and is the unit of measure used in
+        // the CMDLINE output.
 
         file_pages += partition_padding( file_pages, Packages[i].name );
 
