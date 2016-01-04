@@ -829,7 +829,7 @@ unsigned partition_padding( unsigned aSize, const char* aPartitionName )
     if( aSize < minimum )
         aSize = minimum;
 
-    return aSize;           // return value is in flash pages.
+    return aSize;           // return value is in 512 byte sized "pages".
 }
 
 
@@ -844,23 +844,22 @@ int compute_cmdline( const char* srcdir )
 
     struct stat st;
 
-    unsigned flash_offset = 0x2000;     // start of flash allocation in pages (512 bytes)
-
     fprintf( stderr, "fragment for CMDLINE:\n" );
 
     printf( "mtdparts=rk29xxnand:" );
 
-    for( unsigned i=0, out=0; i < Packages.size();  ++i )
+    // The contents of the package-list file drive this loop.
+    // All offsets and sizes are in units of 512 bytes, which I call pages
+    // here (but that may not actually be the flash page size).  Here a
+    // page is defined as 512 bytes, and is the unit of measure used in
+    // the CMDLINE output.
+
+    unsigned flash_offset = 0x2000;     // start of flash allocation in pages
+    for( unsigned i=0; i < Packages.size();  ++i )
     {
         stat( Packages[i].fullpath, &st );
 
         unsigned file_pages = BYTES2PAGES( st.st_size );
-
-        // The contents of the package-list file drive this loop.
-        // All offsets and sizes are in units of 512 bytes, which I call pages
-        // here (but that may not actually be the flash page size).  Here a
-        // page is defined as 512 bytes, and is the unit of measure used in
-        // the CMDLINE output.
 
         file_pages += partition_padding( file_pages, Packages[i].name );
 
@@ -870,8 +869,7 @@ int compute_cmdline( const char* srcdir )
 
         flash_offset += Packages[i].image_size;
 
-
-        if( out )
+        if( i )
             printf( "," );
 
         D( Packages[i].Show( stderr ); )
@@ -888,15 +886,12 @@ int compute_cmdline( const char* srcdir )
         }
         else
         {
-            // 0x00008000@0x00002000(resource),0x00008000@0x0000A000(boot),-@0x00036000(linuxroot)
             printf( "0x%x@0x%x(%s)",
                 Packages[i].image_size,     // already in pages
                 Packages[i].image_offset,
                 Packages[i].name
                 );
         }
-
-        ++out;      // linux partition output count
     }
 
     printf( "\n" );
