@@ -286,20 +286,23 @@ unpack_fail:
 
 struct PACKAGE
 {
-    char        name[32];
-    char        fullpath[60];
+    std::string name;
+    std::string fullpath;
     uint32_t    image_offset;
     uint32_t    image_size;
 
-    PACKAGE()
+    PACKAGE( const char* aName = "", const char* aPath = "" ) :
+        name( aName ),
+        fullpath( aPath ),
+        image_offset( ~0 ),
+        image_size( 0 )
     {
-        memset( this, 0, sizeof(*this) );
     }
 
     void Show( FILE* fp )
     {
         fprintf( fp, "name:%-34s image_offset:0x%08x  image_size:0x%08x fullpath:%s\n",
-            name, image_offset, image_size, fullpath );
+            name.c_str(), image_offset, image_size, fullpath.c_str() );
     }
 };
 
@@ -378,7 +381,7 @@ struct PACKAGES : public PACKAGES_BASE      // a std::vector
         {
             PACKAGE* pack = &(*this)[i];
 
-            if( strcmp( pack->name, name ) == 0 )
+            if( pack->name == name )
                 return pack;
         }
 
@@ -484,7 +487,7 @@ int action_parse_key( char* key, char* value )
         unsigned a, b, c;
 
         sscanf( value, "%d.%d.%d", &a, &b, &c );
-        Parameters.version = ROM_VERSION(a,b,c);
+        Parameters.version = ROM_VERSION( a, b, c );
     }
     else if( strcmp( key, "MACHINE_MODEL" ) == 0 )
     {
@@ -528,14 +531,12 @@ int action_parse_key( char* key, char* value )
 
 int parse_parameter( const char* fname )
 {
+    int     ret = 0;
     char    line[4096];
-    char*   startp;
-    char*   endp;
-    char*   key;
-    char*   value;
-    FILE*   fp;
 
-    if( ( fp = fopen( fname, "r" ) ) == NULL )
+    FILE*   fp = fopen( fname, "r" );
+
+    if( !fp )
     {
         printf( "Can't open file: %s\n", fname );
         return -1;
@@ -543,11 +544,16 @@ int parse_parameter( const char* fname )
 
     while( fgets( line, sizeof(line), fp ) != NULL )
     {
-        startp = line;
-        endp = line + strlen( line ) - 1;
+        char*   startp = line;
+        char*   endp   = line + strlen( line ) - 1;
 
         if( *endp != '\n' && *endp != '\r' && !feof( fp ) )
+        {
+            printf( "parameter file has a very long line that I cannot handle!\n" );
+            fclose( fp );
+            ret = -3;
             break;
+        }
 
         // trim line
         while( isspace( *startp ) )
@@ -565,8 +571,8 @@ int parse_parameter( const char* fname )
         if( *startp == '#' || *startp == 0 )
             continue;
 
-        key = startp;
-        value = strchr( startp, ':' );
+        char*   key   = startp;
+        char*   value = strchr( startp, ':' );
 
         if( !value )
             continue;
@@ -577,59 +583,22 @@ int parse_parameter( const char* fname )
         action_parse_key( key, value );
     }
 
-    if( !feof( fp ) )
-    {
-        printf( "parameter file has a very long line that I cannot handle!\n" );
-        fclose( fp );
-        return -3;
-    }
-
     fclose( fp );
 
     return 0;
 }
 
 
-int append_package( const char* name, const char* path )
+int append_package( const char* aName, const char* aPath )
 {
-    PACKAGE pack;
+    PACKAGE pack( aName, aPath );
 
-    int     excess;
-
-    excess = strlen( name ) - sizeof( pack.name );
-    if( excess > 0 )
-    {
-        fprintf( stderr, "%s: package name '%s' is too long by %d bytes\n",
-            __func__, name, excess
-            );
-
-        return -4;
-    }
-    strncpy( pack.name, name, sizeof( pack.name ) );
-
-    excess = strlen( path ) - sizeof( pack.fullpath );
-    if( excess > 0 )
-    {
-        fprintf( stderr, "%s: package fullpath '%s' is too long by %d bytes\n",
-            __func__, path, excess
-            );
-
-        return -5;
-    }
-
-    strncpy( pack.fullpath, path, sizeof(pack.fullpath) );
-
-    PARTITION* part = Partitions.FindByName( name );
+    PARTITION* part = Partitions.FindByName( aName );
 
     if( part )
     {
         pack.image_offset = part->sector_start;
         pack.image_size   = part->sector_count;
-    }
-    else
-    {
-        pack.image_offset = (unsigned) -1;
-        pack.image_size   = 0;
     }
 
     Packages.push_back( pack );
@@ -785,7 +754,7 @@ void append_crc( FILE* fp )
 
 typedef std::map< std::string, unsigned >   PAD_MAP;
 
-static unsigned find_in_map( const char* aName, const PAD_MAP& aMap )
+static unsigned find_in_map( const std::string& aName, const PAD_MAP& aMap )
 {
     PAD_MAP::const_iterator it = aMap.find( aName );
 
@@ -799,7 +768,7 @@ static unsigned find_in_map( const char* aName, const PAD_MAP& aMap )
 // convert bytes to 512 byte sectors
 #define BYTES2SECTORS(x)      unsigned((uint64_t(x)+511)/512)
 
-unsigned partition_padding( unsigned aSize, const char* aPartitionName )
+unsigned partition_padding( unsigned aSize, const std::string& aPartitionName )
 {
     // tables of bootloader partion names and sizes
 
@@ -854,7 +823,7 @@ int compute_cmdline( const char* srcdir )
     unsigned flash_offset = 0x2000;     // start of flash allocation in sectors
     for( unsigned i=0; i < Packages.size();  ++i )
     {
-        int failed = stat( Packages[i].fullpath, &st );
+        int failed = stat( Packages[i].fullpath.c_str(), &st );
 
         if( failed )
             st.st_size = 0;
@@ -864,14 +833,14 @@ int compute_cmdline( const char* srcdir )
         file_sectors += partition_padding( file_sectors, Packages[i].name );
 
         if( failed &&
-            strcmp( Packages[i].fullpath, "RESERVED" ) &&
-            strcmp( Packages[i].name, "swap" ) )
+            Packages[i].fullpath != "RESERVED" &&
+            Packages[i].name != "swap" )
         {
             fprintf( stderr,
                 "%s: unable to open '%s' partition's file '%s'\n",
                 __func__,
-                Packages[i].name,
-                Packages[i].fullpath
+                Packages[i].name.c_str(),
+                Packages[i].fullpath.c_str()
                 );
             return -2;
         }
@@ -894,7 +863,7 @@ int compute_cmdline( const char* srcdir )
             // "package-file".  For linux it's sensibly "linuxroot".
             printf( "-@0x%x(%s)",
                 Packages[i].image_offset,   // already in sectors
-                Packages[i].name
+                Packages[i].name.c_str()
                 );
         }
         else
@@ -902,7 +871,7 @@ int compute_cmdline( const char* srcdir )
             printf( "0x%x@0x%x(%s)",
                 Packages[i].image_size,     // already in sectors
                 Packages[i].image_offset,
-                Packages[i].name
+                Packages[i].name.c_str()
                 );
         }
     }
@@ -945,16 +914,38 @@ int pack_update( const char* srcdir, const char* dstfile )
 
     for( unsigned i=0;  i < Packages.size();  ++i )
     {
-        strncpy( header.parts[i].name, Packages[i].name, sizeof(header.parts[i].name) );
-        strncpy( header.parts[i].fullpath, Packages[i].fullpath, sizeof(header.parts[i].fullpath) );
+        if( Packages[i].name.size() > sizeof( header.parts[i].name ) )
+        {
+            fprintf( stderr, "%s: package name '%s' is too long by %zu bytes\n",
+                __func__,
+                Packages[i].name.c_str(),
+                Packages[i].name.size() - sizeof( header.parts[i].name )
+                );
+
+            return -4;
+        }
+
+        if( Packages[i].fullpath.size( ) > sizeof( header.parts[i].fullpath ) )
+        {
+            fprintf( stderr, "%s: package fullpath '%s' is too long by %zu bytes\n",
+                __func__,
+                Packages[i].fullpath.c_str(),
+                Packages[i].fullpath.size( ) - sizeof( header.parts[i].fullpath )
+                );
+
+            return -5;
+        }
+
+        strncpy( header.parts[i].name, Packages[i].name.c_str(), sizeof(header.parts[i].name) );
+        strncpy( header.parts[i].fullpath, Packages[i].fullpath.c_str(), sizeof(header.parts[i].fullpath) );
 
         header.parts[i].image_offset = Packages[i].image_offset;
         header.parts[i].image_size   = Packages[i].image_size;
 
-        if( !strcmp( Packages[i].fullpath, "SELF" ) )
+        if( Packages[i].fullpath == "SELF" )
             continue;
 
-        if( !strcmp( Packages[i].fullpath, "RESERVED" ) )
+        if( Packages[i].fullpath == "RESERVED" )
             continue;
 
         snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].fullpath );
