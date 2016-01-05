@@ -3,6 +3,12 @@ rockchip-tools
 
 RockChip tools for RK29, RK30, and RK32 boards.
 
+
+5-Jan-2016
+==========
+Simplified the flow through the -pack code.  Fix numerous bugs.
+
+
 4-Jan-2016
 ==========
 The afptools -CMDLINE option works better, getting a better understanding of requirements.

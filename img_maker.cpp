@@ -181,7 +181,7 @@ int pack_rom( int chiptype,
 
     if( i < rkaf_hdr.num_parts )
         rom_hdr.backup_endpos =
-            (rkaf_hdr.parts[i].image_offset + rkaf_hdr.parts[i].nand_size) / 0x800;
+            (rkaf_hdr.parts[i].flash_offset + rkaf_hdr.parts[i].flash_size) / 0x800;
     else
         rom_hdr.backup_endpos = 0;
 

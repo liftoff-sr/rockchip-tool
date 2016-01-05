@@ -21,7 +21,7 @@ add_definitions(
     -DUSE_OPENSSL
     -Wno-unused-result
     -std=gnu++11                # needed for std::map initializer
-    -D_FILE_OFFSET_BITS=64
+#    -D_FILE_OFFSET_BITS=64
     )
 
 add_executable( afptool

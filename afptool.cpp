@@ -63,7 +63,7 @@ inline unsigned round_up( unsigned aSize )
 
 uint32_t filestream_crc( FILE* fs, size_t stream_len )
 {
-    char buffer[1024*16];
+    unsigned char buffer[1024*16];
 
     uint32_t crc = 0;
 
@@ -219,17 +219,9 @@ int unpack_update( const char* srcfile, const char* dstdir )
 
             printf( "%-32s0x%08x  0x%08x",
                     part->fullpath,
-                    part->image_offset,
-                    part->file_size
+                    part->flash_offset,
+                    part->part_bytecount
                     );
-
-            D(printf( " (%-7u) image_size:0x%08x (%-6u)  image_size:0x%08x (%-6u)",
-                part->file_size,
-                part->image_size,
-                part->image_size,
-                part->image_size,
-                part->image_size
-                );)
 
             printf( "\n" );
 
@@ -247,8 +239,8 @@ int unpack_update( const char* srcfile, const char* dstdir )
 
             if( memcmp( part->name, "parameter", 9 ) == 0 )
             {
-                part->image_offset += 8;
-                part->file_size -= 12;
+                part->flash_offset   += sizeof(PARAM_HEADER);
+                part->part_bytecount -= sizeof(PARAM_HEADER) + 4;    // CRC + PARM_HEADER
             }
 
             snprintf( dir, sizeof(dir), "%s/%s", dstdir, part->fullpath );
@@ -256,13 +248,13 @@ int unpack_update( const char* srcfile, const char* dstdir )
             if( -1 == create_dir( dir ) )
                 continue;
 
-            if( part->image_offset + part->file_size > header.length )
+            if( part->flash_offset + part->part_bytecount > header.length )
             {
                 fprintf( stderr, "Invalid part: %s\n", part->name );
                 continue;
             }
 
-            extract_file( fp, part->image_offset, part->file_size, dir );
+            extract_file( fp, part->flash_offset, part->part_bytecount, dir );
         }
     }
 
@@ -286,53 +278,45 @@ unpack_fail:
 
 struct PACKAGE
 {
-    std::string name;
-    std::string fullpath;
-    uint32_t    image_offset;
-    uint32_t    image_size;
+    std::string     name;
+    std::string     fullpath;
 
     PACKAGE( const char* aName = "", const char* aPath = "" ) :
         name( aName ),
-        fullpath( aPath ),
-        image_offset( ~0 ),
-        image_size( 0 )
+        fullpath( aPath )
     {
     }
 
     void Show( FILE* fp )
     {
-        fprintf( fp, "name:%-34s image_offset:0x%08x  image_size:0x%08x fullpath:%s\n",
-            name.c_str(), image_offset, image_size, fullpath.c_str() );
+        fprintf( fp, "name:%-34s  fullpath:%s\n",
+            name.c_str(), fullpath.c_str() );
     }
 };
 
 
 struct PARTITION
 {
-    char        name[32];
-    unsigned    sector_start;         // at what starting sector (sector=512)
-    unsigned    sector_count;         // how many 512 sectors
+    std::string     name;
+    unsigned        sector_start;   // at what starting sector (sector=512)
+    unsigned        sector_count;   // how many 512 sectors
 
-    PARTITION()
+    PARTITION( const std::string& aName = "", unsigned aSectorStart = 0, unsigned aSectorCount = 0 ) :
+        name( aName ),
+        sector_start( aSectorStart ),
+        sector_count( aSectorCount )
     {
-        memset( name, 0, sizeof(name) );
-        sector_start = 0;
-        sector_count = 0;
-    }
-
-    PARTITION( const char* aName, unsigned aPageStart, unsigned aPageCount ) :
-        sector_start( aPageStart ),
-        sector_count( aPageCount )
-    {
-        strncpy( name, aName, sizeof(name) );
+        D( Show( stderr ); )
     }
 
     void Show( FILE* fp )
     {
-        fprintf( fp, "name:%-34s start:0x%08x size:0x%08x\n",
-            name, sector_start, sector_count );
+        fprintf( fp, "%s: name:%-20s start:0x%08x size:0x%08x\n",
+            __func__,
+            name.c_str(), sector_start, sector_count );
     }
 };
+
 
 typedef std::vector<PACKAGE>    PACKAGES_BASE;
 typedef std::vector<PARTITION>  PARTITIONS_BASE;
@@ -387,7 +371,6 @@ struct PACKAGES : public PACKAGES_BASE      // a std::vector
 
         return NULL;
     }
-
 };
 
 
@@ -401,23 +384,25 @@ struct PARTITIONS : public PARTITIONS_BASE  // a std::vector
             (*this)[i].Show( fp );
     }
 
-    PARTITION* FindByName( const char* name )
+    PARTITION* FindByName( const std::string& aName )
     {
         for( unsigned i=0;  i < size();  ++i )
         {
             PARTITION* part = &(*this)[i];
 
-            if( !strcmp( part->name, name ) )
+            if( part->name == aName )
                 return part;
         }
 
-        if( !strcmp( name, FirstPartition.name ) )
+        if( aName ==  FirstPartition.name )
         {
             return &FirstPartition;
         }
 
         return NULL;
     }
+
+    int Parse( char* str );
 };
 
 
@@ -428,8 +413,10 @@ PACKAGES    Packages;
 PARTITIONS  Partitions;
 
 
-int parse_partitions( char* str )
+int PARTITIONS::Parse( char* str )
 {
+    clear();
+
     char*   parts = strchr( str, ':' );
 
     if( parts )
@@ -442,12 +429,8 @@ int parse_partitions( char* str )
 
         for( ; tok; tok = strtok_r( NULL, ",", &token1 ) )
         {
-            int     i;
-            char*   ptr;
-
-            PARTITION   part;
-
-            part.sector_count = strtoul( tok, &ptr, 0 );
+            char*    ptr;
+            unsigned sector_count = strtoul( tok, &ptr, 0 );
 
             ptr = strchr( ptr, '@' );
 
@@ -455,24 +438,23 @@ int parse_partitions( char* str )
                 continue;
 
             ++ptr;
-            part.sector_start = strtoul( ptr, &ptr, 0 );
+
+            unsigned sector_start = strtoul( ptr, &ptr, 0 );
 
             for( ; *ptr && *ptr != '('; ptr++ )
                 ;
 
             ++ptr;
 
-            for( i = 0; i < sizeof(part.name) && *ptr && *ptr != ')'; ++i )
-            {
-                part.name[i] = *ptr++;
-            }
+            char* name_start = ptr;
 
-            if( i < sizeof(part.name) )
-                part.name[i] = '\0';
-            else
-                part.name[i - 1] = '\0';
+            int i;
+            for( i = 0; i < sizeof( ((PARTITION*)0)->name) && *ptr && *ptr != ')'; ++i )
+                ++ptr;
 
-            Partitions.push_back( part );
+            std::string name( name_start, i );
+
+            Partitions.push_back( PARTITION( name, sector_start, sector_count ) );
         }
     }
 
@@ -482,6 +464,8 @@ int parse_partitions( char* str )
 
 int action_parse_key( char* key, char* value )
 {
+    int ret = 0;
+
     if( strcmp( key, "FIRMWARE_VER" ) == 0 )
     {
         unsigned a, b, c;
@@ -517,7 +501,7 @@ int action_parse_key( char* key, char* value )
 
                 if( strcmp( param_key, "mtdparts" ) == 0 )
                 {
-                    parse_partitions( param_value );
+                    ret = Partitions.Parse( param_value );
                 }
             }
 
@@ -525,7 +509,7 @@ int action_parse_key( char* key, char* value )
         }
     }
 
-    return 0;
+    return ret;
 }
 
 
@@ -577,8 +561,7 @@ int parse_parameter( const char* fname )
         if( !value )
             continue;
 
-        *value = '\0';
-        value++;
+        *value++ = '\0';
 
         action_parse_key( key, value );
     }
@@ -589,28 +572,12 @@ int parse_parameter( const char* fname )
 }
 
 
-int append_package( const char* aName, const char* aPath )
-{
-    PACKAGE pack( aName, aPath );
-
-    PARTITION* part = Partitions.FindByName( aName );
-
-    if( part )
-    {
-        pack.image_offset = part->sector_start;
-        pack.image_size   = part->sector_count;
-    }
-
-    Packages.push_back( pack );
-
-    return 0;
-}
-
-
-int get_packages( const char* fname )
+int PACKAGES::GetPackages( const char* fname )
 {
     int     ret = 0;
     char    line[4096];
+
+    clear();
 
     FILE*   fp = fopen( fname, "r" );
 
@@ -659,9 +626,7 @@ int get_packages( const char* fname )
 
         char* path = startp;
 
-        ret = append_package( name, path );
-        if( ret )
-            break;      // append_package() did its own UI error reporting.
+        push_back( PACKAGE( name, path ) );
     }
 
     fclose( fp );
@@ -670,18 +635,22 @@ int get_packages( const char* fname )
 }
 
 
-int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
+/**
+ * Function import_package
+ * copies an external file into this update image.
+ */
+int import_package( FILE* fp_update, UPDATE_PART* pack, const char* path )
 {
     char    buf[2048];      // must be 2048 for param part
     size_t  readlen;
 
-    pack->image_offset = ftell( fp_out );
+    pack->part_offset = ftell( fp_update );
 
     FILE*   fp_in = fopen( path, "rb" );
 
     if( !fp_in )
     {
-        fprintf( stderr, "Cannot open input file '%s'\n", path );
+        fprintf( stderr, "%s: cannot open input file '%s'\n", __func__, path );
         return -1;
     }
 
@@ -704,9 +673,10 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
         readlen += sizeof(crc);
         memset( buf + readlen, 0, sizeof(buf) - readlen );
 
-        fwrite( buf, 1, sizeof(buf), fp_out );
-        pack->file_size += readlen;
-        pack->image_size += sizeof(buf);
+        fwrite( buf, 1, sizeof(buf), fp_update );
+
+        pack->part_bytecount  += readlen;
+        pack->padded_size += sizeof(buf);
     }
     else
     {
@@ -719,9 +689,9 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
             if( readlen < sizeof(buf) )
                 memset( buf + readlen, 0, sizeof(buf) - readlen );
 
-            fwrite( buf, 1, sizeof(buf), fp_out );
-            pack->file_size += readlen;
-            pack->image_size += sizeof(buf);
+            fwrite( buf, 1, sizeof(buf), fp_update );
+            pack->part_bytecount += readlen;
+            pack->padded_size    += sizeof(buf);
         } while( !feof( fp_in ) );
     }
 
@@ -733,10 +703,9 @@ int import_package( FILE* fp_out, UPDATE_PART* pack, const char* path )
 
 void append_crc( FILE* fp )
 {
-    off_t file_len = 0;
-
     fseeko( fp, 0, SEEK_END );
-    file_len = ftello( fp );
+
+    off_t file_len = ftello( fp );
 
     if( file_len == (off_t) -1 )
         return;
@@ -808,7 +777,7 @@ int compute_cmdline( const char* srcdir )
 
     snprintf( buf, sizeof(buf), "%s/%s", srcdir, "package-file" );
 
-    if( get_packages( buf ) )
+    if( Packages.GetPackages( buf ) )
         return -1;
 
     struct stat st;
@@ -845,11 +814,10 @@ int compute_cmdline( const char* srcdir )
             return -2;
         }
 
-        Packages[i].image_size   = file_sectors;
+        unsigned cur_flash_sectors = file_sectors;      // partition size in sectors
+        unsigned cur_flash_offset  = flash_offset;      // partition offset in sectors
 
-        Packages[i].image_offset = flash_offset;
-
-        flash_offset += Packages[i].image_size;
+        flash_offset += cur_flash_offset;
 
         if( i )
             printf( "," );
@@ -862,15 +830,15 @@ int compute_cmdline( const char* srcdir )
             // '-' size field, so make sure of this partition name in your
             // "package-file".  For linux it's sensibly "linuxroot".
             printf( "-@0x%x(%s)",
-                Packages[i].image_offset,   // already in sectors
+                cur_flash_offset,
                 Packages[i].name.c_str()
                 );
         }
         else
         {
             printf( "0x%x@0x%x(%s)",
-                Packages[i].image_size,     // already in sectors
-                Packages[i].image_offset,
+                cur_flash_sectors,
+                cur_flash_offset,
                 Packages[i].name.c_str()
                 );
         }
@@ -884,12 +852,10 @@ int compute_cmdline( const char* srcdir )
 
 int pack_update( const char* srcdir, const char* dstfile )
 {
-    UPDATE_HEADER header;   // constructor zeros it.
-
+    int     ret = 0;
     char    buf[4096];
 
     printf( "------ PACKAGE ------\n" );
-    memset( &header, 0, sizeof(header) );
 
     snprintf( buf, sizeof(buf), "%s/%s", srcdir, "parameter" );
 
@@ -898,21 +864,26 @@ int pack_update( const char* srcdir, const char* dstfile )
 
     snprintf( buf, sizeof(buf), "%s/%s", srcdir, "package-file" );
 
-    if( get_packages( buf ) )
+    if( Packages.GetPackages( buf ) )
         return -1;
 
-    FILE* fp = fopen( dstfile, "wb+" );
+    FILE* fp_update = fopen( dstfile, "wb+" );
 
-    if( !fp )
+    if( !fp_update )
     {
         fprintf( stderr, "Can't open file \"%s\": %s\n", dstfile, strerror( errno ) );
-        goto pack_failed;
+        return -1;
     }
 
-    // put out an inaccurate place holder, planning to come back later and update it.
-    fwrite( &header, sizeof(header), 1, fp );
+    UPDATE_HEADER header;
 
-    for( unsigned i=0;  i < Packages.size();  ++i )
+    memset( &header, 0, sizeof(header) );
+
+    // put out an inaccurate place holder, planning to come back later and update it.
+    fwrite( &header, sizeof(header), 1, fp_update );
+
+    unsigned i;
+    for( i=0;  i < Packages.size() && i<16;  ++i )
     {
         if( Packages[i].name.size() > sizeof( header.parts[i].name ) )
         {
@@ -939,9 +910,6 @@ int pack_update( const char* srcdir, const char* dstfile )
         strncpy( header.parts[i].name, Packages[i].name.c_str(), sizeof(header.parts[i].name) );
         strncpy( header.parts[i].fullpath, Packages[i].fullpath.c_str(), sizeof(header.parts[i].fullpath) );
 
-        header.parts[i].image_offset = Packages[i].image_offset;
-        header.parts[i].image_size   = Packages[i].image_size;
-
         if( Packages[i].fullpath == "SELF" )
             continue;
 
@@ -951,7 +919,24 @@ int pack_update( const char* srcdir, const char* dstfile )
         snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].fullpath );
         printf( "Adding bootloader partition: %-24s  using: %s\n", header.parts[i].name, buf );
 
-        import_package( fp, &header.parts[i], buf );
+        ret = import_package( fp_update, &header.parts[i], buf );
+        if( ret )
+        {
+            break;
+        }
+
+        PARTITION* p = Partitions.FindByName( Packages[i].name );
+
+        if( p )
+        {
+            header.parts[i].flash_offset = p->sector_start;
+            header.parts[i].flash_size   = p->sector_count;
+        }
+        else
+        {
+            header.parts[i].flash_offset = ~0;
+            header.parts[i].flash_size   = 0;
+        }
     }
 
     memcpy( header.magic, "RKAF", sizeof(header.magic) );
@@ -959,38 +944,31 @@ int pack_update( const char* srcdir, const char* dstfile )
     strncpy( header.model, Parameters.machine_model.c_str(), sizeof(header.model) );
     strncpy( header.id, Parameters.machine_id.c_str(), sizeof(header.id) );
 
-    header.length = ftell( fp );
-    header.num_parts = Packages.size();
+    header.length = ftell( fp_update );
+    header.num_parts = i;
     header.version = Parameters.version;
 
-    for( int i = header.num_parts - 1; i >= 0; --i )
+    for( i = 0; i< header.num_parts; ++i )
     {
         if( strcmp( header.parts[i].fullpath, "SELF" ) == 0 )
         {
-            header.parts[i].file_size  = header.length + 4;
-            header.parts[i].image_size = round_up( header.parts[i].file_size );
+            header.parts[i].part_bytecount  = header.length + 4;
+            header.parts[i].flash_size = round_up( header.parts[i].part_bytecount );
+            break;
         }
     }
 
-    fseek( fp, 0, SEEK_SET );
-    fwrite( &header, sizeof(header), 1, fp );
+    fseek( fp_update, 0, SEEK_SET );
+    fwrite( &header, sizeof(header), 1, fp_update );
 
-    append_crc( fp );
+    append_crc( fp_update );
 
-    fclose( fp );
+
+    fclose( fp_update );
 
     printf( "------ OK ------\n" );
 
-    return 0;
-
-pack_failed:
-
-    if( fp )
-    {
-        fclose( fp );
-    }
-
-    return -1;
+    return ret;
 }
 
 
