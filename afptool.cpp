@@ -63,7 +63,7 @@ inline unsigned round_up( unsigned aSize )
 
 uint32_t filestream_crc( FILE* fs, size_t stream_len )
 {
-    unsigned char buffer[1024*16];
+    char buffer[1024*16];
 
     uint32_t crc = 0;
 
