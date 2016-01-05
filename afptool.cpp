@@ -54,7 +54,7 @@
 const char* appname;
 
 
-/// Round up to nearest multiple of flash page size of 512
+/// Round up to nearest multiple of sector size of 512
 inline unsigned round_up( unsigned aSize )
 {
     return ((aSize + 511)/512) * 512;
@@ -307,19 +307,19 @@ struct PACKAGE
 struct PARTITION
 {
     char        name[32];
-    unsigned    page_start;         // at what starting page (page=512)
-    unsigned    page_count;         // how many 512 pages
+    unsigned    sector_start;         // at what starting sector (sector=512)
+    unsigned    sector_count;         // how many 512 sectors
 
     PARTITION()
     {
         memset( name, 0, sizeof(name) );
-        page_start = 0;
-        page_count = 0;
+        sector_start = 0;
+        sector_count = 0;
     }
 
     PARTITION( const char* aName, unsigned aPageStart, unsigned aPageCount ) :
-        page_start( aPageStart ),
-        page_count( aPageCount )
+        sector_start( aPageStart ),
+        sector_count( aPageCount )
     {
         strncpy( name, aName, sizeof(name) );
     }
@@ -327,7 +327,7 @@ struct PARTITION
     void Show( FILE* fp )
     {
         fprintf( fp, "name:%-34s start:0x%08x size:0x%08x\n",
-            name, page_start, page_count );
+            name, sector_start, sector_count );
     }
 };
 
@@ -444,7 +444,7 @@ int parse_partitions( char* str )
 
             PARTITION   part;
 
-            part.page_count = strtoul( tok, &ptr, 0 );
+            part.sector_count = strtoul( tok, &ptr, 0 );
 
             ptr = strchr( ptr, '@' );
 
@@ -452,7 +452,7 @@ int parse_partitions( char* str )
                 continue;
 
             ++ptr;
-            part.page_start = strtoul( ptr, &ptr, 0 );
+            part.sector_start = strtoul( ptr, &ptr, 0 );
 
             for( ; *ptr && *ptr != '('; ptr++ )
                 ;
@@ -623,8 +623,8 @@ int append_package( const char* name, const char* path )
 
     if( part )
     {
-        pack.image_offset = part->page_start;
-        pack.image_size   = part->page_count;
+        pack.image_offset = part->sector_start;
+        pack.image_size   = part->sector_count;
     }
     else
     {
@@ -796,8 +796,8 @@ static unsigned find_in_map( const char* aName, const PAD_MAP& aMap )
 }
 
 
-// convert bytes to 512 byte pages
-#define BYTES2PAGES(x)      unsigned((uint64_t(x)+511)/512)
+// convert bytes to 512 byte sectors
+#define BYTES2SECTORS(x)      unsigned((uint64_t(x)+511)/512)
 
 unsigned partition_padding( unsigned aSize, const char* aPartitionName )
 {
@@ -806,20 +806,20 @@ unsigned partition_padding( unsigned aSize, const char* aPartitionName )
     // minimums:
     // partition may not be smaller than this.
     static const PAD_MAP minimums = {
-        { "bootloader",     BYTES2PAGES(16*1024*1024) },            // 1*1024*1024 = a megabyte
-        { "boot",           BYTES2PAGES(16*1024*1024) },
+        { "bootloader",     BYTES2SECTORS(16*1024*1024) },            // 1*1024*1024 = a megabyte
+        { "boot",           BYTES2SECTORS(16*1024*1024) },
 
         // This is a hack for my 32 gbyte emmc, gives me a 6 gbyte swap
         // partition without having to supply an image file.
-        { "swap",           BYTES2PAGES(6*1024*1024*1024ULL) },     // 1024*1024*1024 = gigabyte
+        { "swap",           BYTES2SECTORS(6*1024*1024*1024ULL) },     // 1024*1024*1024 = gigabyte
     };
 
     // paddings:
     // to add to the end of respective parition's input file size.
     static const PAD_MAP paddings = {
-        { "bootloader",     BYTES2PAGES(1*1024*1024) },
-        { "recover-script", BYTES2PAGES(1*1024*1024) },
-        { "linuxroot",      BYTES2PAGES(5*1024*1024) },
+        { "bootloader",     BYTES2SECTORS(1*1024*1024) },
+        { "recover-script", BYTES2SECTORS(1*1024*1024) },
+        { "linuxroot",      BYTES2SECTORS(5*1024*1024) },
     };
 
     aSize += find_in_map( aPartitionName, paddings );
@@ -829,7 +829,7 @@ unsigned partition_padding( unsigned aSize, const char* aPartitionName )
     if( aSize < minimum )
         aSize = minimum;
 
-    return aSize;           // return value is in 512 byte sized "pages".
+    return aSize;           // return value is in 512 byte sized "sectors".
 }
 
 
@@ -849,21 +849,34 @@ int compute_cmdline( const char* srcdir )
     printf( "mtdparts=rk29xxnand:" );
 
     // The contents of the package-list file drive this loop.
-    // All offsets and sizes are in units of 512 bytes, which I call pages
-    // here (but that may not actually be the flash page size).  Here a
-    // page is defined as 512 bytes, and is the unit of measure used in
-    // the CMDLINE output.
+    // All offsets and sizes are in units of 512 bytes, i.e. a sector.
 
-    unsigned flash_offset = 0x2000;     // start of flash allocation in pages
+    unsigned flash_offset = 0x2000;     // start of flash allocation in sectors
     for( unsigned i=0; i < Packages.size();  ++i )
     {
-        stat( Packages[i].fullpath, &st );
+        int failed = stat( Packages[i].fullpath, &st );
 
-        unsigned file_pages = BYTES2PAGES( st.st_size );
+        if( failed )
+            st.st_size = 0;
 
-        file_pages += partition_padding( file_pages, Packages[i].name );
+        unsigned file_sectors = BYTES2SECTORS( st.st_size );
 
-        Packages[i].image_size   = file_pages;
+        file_sectors += partition_padding( file_sectors, Packages[i].name );
+
+        if( failed &&
+            strcmp( Packages[i].fullpath, "RESERVED" ) &&
+            strcmp( Packages[i].name, "swap" ) )
+        {
+            fprintf( stderr,
+                "%s: unable to open '%s' partition's file '%s'\n",
+                __func__,
+                Packages[i].name,
+                Packages[i].fullpath
+                );
+            return -2;
+        }
+
+        Packages[i].image_size   = file_sectors;
 
         Packages[i].image_offset = flash_offset;
 
@@ -880,14 +893,14 @@ int compute_cmdline( const char* srcdir )
             // '-' size field, so make sure of this partition name in your
             // "package-file".  For linux it's sensibly "linuxroot".
             printf( "-@0x%x(%s)",
-                Packages[i].image_offset,   // already in pages
+                Packages[i].image_offset,   // already in sectors
                 Packages[i].name
                 );
         }
         else
         {
             printf( "0x%x@0x%x(%s)",
-                Packages[i].image_size,     // already in pages
+                Packages[i].image_size,     // already in sectors
                 Packages[i].image_offset,
                 Packages[i].name
                 );
