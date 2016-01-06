@@ -16,12 +16,14 @@ include_directories( ${OPENSSL_INCLUDE_DIR} )
 set( CMAKE_C_FLAGS_DEBUG   "-g3 -ggdb3 -DDEBUG" )
 set( CMAKE_CXX_FLAGS_DEBUG "-g3 -ggdb3 -DDEBUG" )
 
+# needed for std::map initializer
+set( CMAKE_CXX_FLAGS ${CMAKE_CXX_FLAGS} -std=gnu++11 )
+
 
 add_definitions(
     -DUSE_OPENSSL
     -Wno-unused-result
-    -std=gnu++11                # needed for std::map initializer
-#    -D_FILE_OFFSET_BITS=64
+    -D_FILE_OFFSET_BITS=64
     )
 
 add_executable( afptool

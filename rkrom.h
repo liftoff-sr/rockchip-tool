@@ -44,7 +44,7 @@ struct RKFW_HEADER
 
     RKFW_HEADER()
     {
-        memset( this, 0, sizeof(RKFW_HEADER) );
+        memset( this, 0, sizeof(*this) );
         memcpy( head_code, "RKFW", 4 );
         head_len   =  sizeof( RKFW_HEADER );    // 0x66
         loader_offset = sizeof( RKFW_HEADER );  // 0x66

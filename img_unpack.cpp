@@ -32,9 +32,16 @@ int export_data( const char* filename, unsigned offset, unsigned length, FILE* f
 
     fseek( fp, offset, SEEK_SET );
 
-    unsigned readlen;
-    while( length && (readlen = fread( buffer, 1, sizeof(buffer), fp )) != 0 )
+    while( length )
     {
+        // we are not reading to end of file.
+        unsigned readlen = length < sizeof(buffer) ? length : sizeof(buffer);
+
+        readlen = fread( buffer, 1, readlen, fp );
+
+        if( !readlen )
+            break;
+
         length  -= readlen;
 
         fwrite( buffer, 1, readlen, out_fp );
@@ -56,10 +63,15 @@ int check_md5sum( FILE* fp, unsigned length )
 
     MD5_Init( &md5_ctx );
 
-    unsigned readlen;
-    while( length > 0 &&
-            (readlen = fread( buffer, 1, sizeof(buffer), fp ) ) != 0 )
+    while( length )
     {
+        // not reading until end of file.
+        unsigned readlen = length < sizeof(buffer) ? length : sizeof(buffer);
+
+        readlen = fread( buffer, 1, readlen, fp );
+        if( !readlen )
+            break;
+
         length -= readlen;
 
         MD5_Update( &md5_ctx, buffer, readlen );
@@ -84,25 +96,32 @@ int check_md5sum( FILE* fp, unsigned length )
 
 int unpack_rom( const char* filepath, const char* dstfile )
 {
+    int ret = 0;
     RKFW_HEADER rom_header;
 
     FILE* fp = fopen( filepath, "rb" );
 
     if( !fp )
     {
-        err( EXIT_FAILURE, "%s: can't open file '%s'", __func__, filepath );
+        ret = -1;
+        fprintf( stderr, "%s: can't open file '%s'", __func__, filepath );
+        goto out;
     }
 
     fseek( fp, 0, SEEK_SET );
 
     if( 1 != fread( &rom_header, sizeof(rom_header), 1, fp ) )
     {
-        err( EXIT_FAILURE, "%s: can't read rom_header from '%s'", __func__, filepath );
+        ret = -2;
+        fprintf( stderr, "%s: can't read rom_header from '%s'", __func__, filepath );
+        goto out;
     }
 
     if( memcmp( RK_ROM_HEADER_CODE, rom_header.head_code, sizeof(rom_header.head_code) ) != 0 )
     {
-        err( EXIT_FAILURE, "%s: rom_header not valid from '%s'", __func__, filepath );
+        ret = -3;
+        fprintf( stderr, "%s: rom_header not valid from '%s'", __func__, filepath );
+        goto out;
     }
 
 #if defined(DEBUG)
@@ -150,29 +169,28 @@ int unpack_rom( const char* filepath, const char* dstfile )
     printf( "checking md5sum...." );
     fflush( stdout );
 
-    unsigned filesize = rom_header.image_offset + rom_header.image_length;
+    unsigned filesize;
+    filesize = rom_header.image_offset + rom_header.image_length;
 
     if( check_md5sum( fp, filesize ) != 0 )
     {
-        printf( "md5sum did not match!\n" );
-        goto unpack_fail;
+        ret = -4;
+        fprintf( stderr, "md5sum did not match!\n" );
+        goto out;
     }
 
-    printf( "OK\n" );
+    printf( "md5sum is OK\n" );
 
     // export_data(loader_filename, rom_header.loader_offset, rom_header.loader_length, fp);
-    export_data( dstfile, rom_header.image_offset, rom_header.image_length, fp );
+    ret = export_data( dstfile, rom_header.image_offset, rom_header.image_length, fp );
 
-    fclose( fp );
-    return 0;
-
-unpack_fail:
-
+out:
     if( fp )
         fclose( fp );
 
-    return -1;
+    return ret;
 }
+
 
 const char* progname;
 

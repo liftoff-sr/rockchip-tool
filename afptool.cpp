@@ -41,7 +41,7 @@
 #include "rkafp.h"
 #include "rkrom.h"
 
-#define VERSION     "Jan  4 2016"
+#define VERSION     "6-Jan-2016"
 
 
 #if defined(DEBUG)
@@ -178,7 +178,7 @@ int unpack_update( const char* srcfile, const char* dstdir )
     int ret = 0;
 
     UPDATE_HEADER   header;
-    unsigned        filesize;
+    off_t           filesize;
 
     FILE* fp = fopen( srcfile, "rb" );
 
@@ -203,63 +203,63 @@ int unpack_update( const char* srcfile, const char* dstdir )
         goto out;
     }
 
-    fseek( fp, 0, SEEK_END );
+    fseeko( fp, 0, SEEK_END );
 
-    filesize = ftell(fp);
+    filesize = ftello(fp);
 
-    if( filesize - 4 < header.length )
+    if( filesize - 4 != header.length )
     {
         fprintf( stderr,
-            "%s: update_header has length greater than file's length, cannot check crc\n",
+            "%s: update_header.length cannot be correct, cannot check CRC\n",
             __func__
             );
-        ret = -7;
-        goto out;
-    }
-
-    fseek( fp, header.length, SEEK_SET );
-
-    uint32_t crc_read;
-    uint32_t crc_calc;
-    unsigned readcount;
-
-    readcount = fread( &crc_read, 1, sizeof(crc_read), fp );
-
-    if( sizeof(crc_read) != readcount )
-    {
-        fprintf( stderr, "Can't read crc checksum, readcount=%d header.len=%u\n",
-            readcount, header.length );
-    }
-
-    printf( "Checking CRC for file '%s'...", srcfile );
-    fflush( stdout );
-
-    fseek( fp, 0, SEEK_SET );
-
-    crc_calc = filestream_crc( fp, header.length );
-
-    if( crc_calc != crc_read  )
-    {
-        if( filesize - 4 > header.length )
-        {
-            fprintf( stderr,
-                "CRC_file:0x%08x CRC_calc:0x%08x mismatch, however file size was bigger than header indicated\n",
-                crc_read,
-                crc_calc
-                );
-        }
-        else
-            fprintf( stderr,
-                "CRC_file:0x%08x CRC_calc:0x%08x mismatch in file '%s'\n",
-                crc_read,
-                crc_calc,
-                srcfile
-                );
-
-        goto out;
     }
     else
-        printf( "OK\n\n" );
+    {
+        fseeko( fp, header.length, SEEK_SET );
+
+        uint32_t crc_read;
+        uint32_t crc_calc;
+        unsigned readcount;
+
+        readcount = fread( &crc_read, 1, sizeof(crc_read), fp );
+
+        if( sizeof(crc_read) != readcount )
+        {
+            fprintf( stderr, "Can't read crc checksum, readcount=%d header.len=%u\n",
+                readcount, header.length );
+        }
+
+        printf( "Checking CRC for file '%s'...", srcfile );
+        fflush( stdout );
+
+        fseeko( fp, 0, SEEK_SET );
+
+        crc_calc = filestream_crc( fp, header.length );
+
+        if( crc_calc != crc_read  )
+        {
+            if( filesize - 4 > header.length )
+            {
+                fprintf( stderr,
+                    "CRC_file:0x%08x CRC_calc:0x%08x mismatch, however file size was bigger than header indicated\n",
+                    crc_read,
+                    crc_calc
+                    );
+            }
+            else
+                fprintf( stderr,
+                    "CRC_file:0x%08x CRC_calc:0x%08x mismatch in file '%s'\n",
+                    crc_read,
+                    crc_calc,
+                    srcfile
+                    );
+
+            goto out;
+        }
+        else
+            printf( "OK\n\n" );
+    }
 
     printf( "------- UNPACKING %d partitions -------\n", header.num_parts );
 
@@ -699,10 +699,20 @@ int PACKAGES::GetPackages( const char* fname )
  */
 int import_package( FILE* fp_update, UPDATE_PART* pack, const char* path )
 {
+    int     ret = 0;
     char    buf[2048];      // must be 2048 for param part
     size_t  readlen;
+    off_t   part_offset = ftello( fp_update );
 
-    pack->part_offset = ftell( fp_update );
+    if( part_offset > uint32_t( ~0 ) )
+    {
+        fprintf( stderr,
+            "%s: partion file %s makes output archive too big.\n",
+            __func__, path );
+        return -2;
+    }
+
+    pack->part_offset = part_offset;
 
     FILE*   fp_in = fopen( path, "rb" );
 
@@ -738,19 +748,16 @@ int import_package( FILE* fp_update, UPDATE_PART* pack, const char* path )
     }
     else
     {
-        do {
-            readlen = fread( buf, 1, sizeof(buf), fp_in );
-
-            if( readlen == 0 )
-                break;
-
+        while( (readlen = fread( buf, 1, sizeof(buf), fp_in )) != 0 )
+        {
             if( readlen < sizeof(buf) )
                 memset( buf + readlen, 0, sizeof(buf) - readlen );
 
             fwrite( buf, 1, sizeof(buf), fp_update );
+
             pack->part_bytecount += readlen;
             pack->padded_size    += sizeof(buf);
-        } while( !feof( fp_in ) );
+        }
     }
 
     fclose( fp_in );
@@ -768,13 +775,13 @@ void append_crc( FILE* fp )
     if( file_len == (off_t) -1 )
         return;
 
-    fseek( fp, 0, SEEK_SET );
+    fseeko( fp, 0, SEEK_SET );
 
     printf( "Adding CRC...\n" );
 
     uint32_t crc = filestream_crc( fp, file_len );
 
-    fseek( fp, 0, SEEK_END );
+    fseeko( fp, 0, SEEK_END );
     fwrite( &crc, 1, sizeof(crc), fp );
 }
 
@@ -1003,7 +1010,21 @@ int pack_update( const char* srcdir, const char* dstfile )
     strncpy( header.model, Parameters.machine_model.c_str(), sizeof(header.model) );
     strncpy( header.id, Parameters.machine_id.c_str(), sizeof(header.id) );
 
-    header.length = ftell( fp_update );
+
+    off_t   filesize = ftello( fp_update );
+
+    if( filesize > uint32_t(~0) )
+    {
+        fprintf( stderr,
+            "%s: file '%s' header.length needs to be than the 32 bit field can hold\n"
+            " leaving it at zero.\n",
+            __func__,
+            dstfile
+            );
+    }
+    else
+        header.length = filesize;
+
     header.num_parts = i;
     header.version = Parameters.version;
 
@@ -1017,11 +1038,10 @@ int pack_update( const char* srcdir, const char* dstfile )
         }
     }
 
-    fseek( fp_update, 0, SEEK_SET );
+    fseeko( fp_update, 0, SEEK_SET );
     fwrite( &header, sizeof(header), 1, fp_update );
 
     append_crc( fp_update );
-
 
     fclose( fp_update );
 

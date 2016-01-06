@@ -13,7 +13,13 @@
  * in the flash.  Think of this as similar to a zip file header record.
  * Some of the offsets and lengths in this structure are in bytes.  This makes this
  * file format lame because these fields are only 32 bits, limiting partitions
- * to 4 gbytes or so.
+ * to 4 gbytes or so and the file format begins to fall over when it goes beyond
+ * 4 gbytes.
+ *
+ * See script file download_images.sh for a technique which does not use this
+ * poorly designed archive file format: "update.img".  The partion files can
+ * come out of a standard archive file such as a zip file and be directed to
+ * their proper place in the flash using the parameter file, or a superset of it.
  */
 struct UPDATE_PART {
     char         name[32];
