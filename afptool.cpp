@@ -61,6 +61,23 @@ inline unsigned round_up( unsigned aSize )
 }
 
 
+/**
+ * Function std_string
+ * returns a std::string from a byte array which may not be nul terminated.
+ * However if it is terminated, then there may additional nuls up to a total
+ * byte array length of aMaxLength
+ */
+static std::string  std_string( const char* aByteArray, int aMaxLength )
+{
+    int len = aMaxLength;
+
+    while( len > 0 && aByteArray[len-1] == 0 )
+        --len;
+
+    return std::string( aByteArray, len );
+}
+
+
 uint32_t filestream_crc( FILE* fs, size_t stream_len )
 {
     char buffer[1024*16];
@@ -68,9 +85,16 @@ uint32_t filestream_crc( FILE* fs, size_t stream_len )
     uint32_t crc = 0;
 
     unsigned read_len;
-    while( stream_len &&
-            (read_len = fread( buffer, 1, sizeof(buffer), fs ) ) != 0 )
+
+    while( stream_len )
     {
+        // we may not intend to read to the end of file, so limit read_len.
+        unsigned read_len = stream_len < sizeof(buffer) ? stream_len : sizeof(buffer);
+
+        read_len = fread( buffer, 1, read_len, fs );
+        if( !read_len )
+            break;
+
         RKCRC( crc, buffer, read_len );
         stream_len -= read_len;
     }
@@ -86,17 +110,22 @@ int create_dir( char* dir )
 {
     char* sep = dir;
 
-    while( ( sep = strchr( sep, '/' ) ) != NULL )
+    while( *sep && ( sep = strchr( sep, '/' ) ) != NULL )
     {
-        *sep = '\0';
-
-        if( mkdir( dir, 0755 ) != 0 && errno != EEXIST )
+        if( sep == dir )        // an absolute path was passed.
+            ++sep;
+        else
         {
-            fprintf( stderr, "%s: can't create directory: %s\n", __func__, dir );
-            return -1;
-        }
+            *sep = '\0';
 
-        *sep++ = '/';
+            if( mkdir( dir, 0755 ) != 0 && errno != EEXIST )
+            {
+                fprintf( stderr, "%s: can't create directory: %s\n", __func__, dir );
+                return -1;
+            }
+
+            *sep++ = '/';
+        }
     }
 
     return 0;
@@ -146,28 +175,37 @@ int extract_file( FILE* fp, off_t offset, size_t len, const char* fullpath )
 
 int unpack_update( const char* srcfile, const char* dstdir )
 {
-    UPDATE_HEADER header;
+    int ret = 0;
+
+    UPDATE_HEADER   header;
+    unsigned        filesize;
 
     FILE* fp = fopen( srcfile, "rb" );
 
     if( !fp )
     {
-        err( EXIT_FAILURE, "%s: can't open file '%s'", __func__, srcfile );
+        fprintf( stderr, "%s: can't open file '%s'", __func__, srcfile );
+        ret = -4;
+        goto out;
     }
 
     if( sizeof(header) != fread( &header, 1, sizeof(header), fp ) )
     {
-        err( EXIT_FAILURE, "%s: can't read image header from file '%s'", __func__, srcfile );
+        fprintf( stderr, "%s: can't read image header from file '%s'", __func__, srcfile );
+        ret = -5;
+        goto out;
     }
 
     if( strncmp( header.magic, RKAFP_MAGIC, sizeof(header.magic) ) != 0 )
     {
-        err( EXIT_FAILURE, "%s: invalid header magic id in file '%s'", __func__, srcfile );
+        fprintf( stderr, "%s: invalid header magic id in file '%s'", __func__, srcfile );
+        ret = -6;
+        goto out;
     }
 
     fseek( fp, 0, SEEK_END );
 
-    unsigned filesize = ftell(fp);
+    filesize = ftell(fp);
 
     if( filesize - 4 < header.length )
     {
@@ -175,39 +213,55 @@ int unpack_update( const char* srcfile, const char* dstdir )
             "%s: update_header has length greater than file's length, cannot check crc\n",
             __func__
             );
+        ret = -7;
+        goto out;
     }
-    else
+
+    fseek( fp, header.length, SEEK_SET );
+
+    uint32_t crc_read;
+    uint32_t crc_calc;
+    unsigned readcount;
+
+    readcount = fread( &crc_read, 1, sizeof(crc_read), fp );
+
+    if( sizeof(crc_read) != readcount )
     {
-        fseek( fp, header.length, SEEK_SET );
+        fprintf( stderr, "Can't read crc checksum, readcount=%d header.len=%u\n",
+            readcount, header.length );
+    }
 
-        uint32_t crc;
+    printf( "Checking CRC for file '%s'...", srcfile );
+    fflush( stdout );
 
-        unsigned readcount;
-        readcount = fread( &crc, 1, sizeof(crc), fp );
+    fseek( fp, 0, SEEK_SET );
 
-        if( sizeof(crc) != readcount )
+    crc_calc = filestream_crc( fp, header.length );
+
+    if( crc_calc != crc_read  )
+    {
+        if( filesize - 4 > header.length )
         {
-            fprintf( stderr, "Can't read crc checksum, readcount=%d header.len=%u\n",
-                readcount, header.length );
-        }
-
-        printf( "Checking file's crc..." );
-        fflush( stdout );
-
-        fseek( fp, 0, SEEK_SET );
-
-        if( crc != filestream_crc( fp, header.length ) )
-        {
-            if( filesize-4 > header.length )
-                fprintf( stderr, "CRC mismatch, however the file's size was bigger than header indicated\n");
-            else
-                err( EXIT_FAILURE, "%s: invalid crc for file '%s'", __func__, srcfile );
+            fprintf( stderr,
+                "CRC_file:0x%08x CRC_calc:0x%08x mismatch, however file size was bigger than header indicated\n",
+                crc_read,
+                crc_calc
+                );
         }
         else
-            printf( "OK\n" );
-    }
+            fprintf( stderr,
+                "CRC_file:0x%08x CRC_calc:0x%08x mismatch in file '%s'\n",
+                crc_read,
+                crc_calc,
+                srcfile
+                );
 
-    printf( "------- UNPACKING %d parts -------\n", header.num_parts );
+        goto out;
+    }
+    else
+        printf( "OK\n\n" );
+
+    printf( "------- UNPACKING %d partitions -------\n", header.num_parts );
 
     if( header.num_parts )
     {
@@ -217,9 +271,9 @@ int unpack_update( const char* srcfile, const char* dstdir )
         {
             UPDATE_PART* part = &header.parts[i];
 
-            printf( "%-32s0x%08x  0x%08x",
-                    part->fullpath,
-                    part->flash_offset,
+            printf( "%-60s0x%08x  0x%08x",
+                    std_string( part->fullpath, sizeof( part->fullpath ) ).c_str(),
+                    part->part_offset,
                     part->part_bytecount
                     );
 
@@ -227,13 +281,13 @@ int unpack_update( const char* srcfile, const char* dstdir )
 
             if( !strcmp( part->fullpath, "SELF" ) )
             {
-                printf( "Skip SELF file.\n" );
+                printf( "Skipping SELF partition file.\n" );
                 continue;
             }
 
             if( !strcmp( part->fullpath, "RESERVED" ) )
             {
-                printf( "Skip RESERVED file.\n" );
+                printf( "Skipping RESERVED partition file.\n" );
                 continue;
             }
 
@@ -243,33 +297,36 @@ int unpack_update( const char* srcfile, const char* dstdir )
                 part->part_bytecount -= sizeof(PARAM_HEADER) + 4;    // CRC + PARM_HEADER
             }
 
-            snprintf( dir, sizeof(dir), "%s/%s", dstdir, part->fullpath );
+            snprintf( dir, sizeof(dir), "%s/%s", dstdir,
+                std_string( part->fullpath, sizeof( part->fullpath ) ).c_str() );
 
-            if( -1 == create_dir( dir ) )
-                continue;
+            ret = create_dir( dir );
+            if( ret )
+                break;
 
-            if( part->flash_offset + part->part_bytecount > header.length )
+            if( part->part_offset + part->part_bytecount > header.length )
             {
-                fprintf( stderr, "Invalid part: %s\n", part->name );
-                continue;
+                fprintf( stderr, "%s: partition record: '%s' has a length too long for envelop\n",
+                    __func__,
+                    std_string( part->name, sizeof( part->name ) ).c_str()
+                    );
+                ret = -2;
+                break;
             }
 
-            extract_file( fp, part->flash_offset, part->part_bytecount, dir );
+            ret = extract_file( fp, part->part_offset, part->part_bytecount, dir );
+            if( ret )
+                break;
         }
+
+        printf( "\n" );
     }
 
-    fclose( fp );
-
-    return 0;
-
-unpack_fail:
-
+out:
     if( fp )
-    {
         fclose( fp );
-    }
 
-    return -1;
+    return ret;
 }
 
 
@@ -359,13 +416,13 @@ struct PACKAGES : public PACKAGES_BASE      // a std::vector
             (*this)[i].Show( fp );
     }
 
-    PACKAGE* FindByName( const char* name )
+    PACKAGE* FindByName( const std::string& aName )
     {
         for( unsigned i = 0; i < size(); ++i )
         {
             PACKAGE* pack = &(*this)[i];
 
-            if( pack->name == name )
+            if( pack->name == aName )
                 return pack;
         }
 
@@ -531,26 +588,23 @@ int parse_parameter( const char* fname )
         char*   startp = line;
         char*   endp   = line + strlen( line ) - 1;
 
+        // skip UTF-8 BOM only in first line
+        if( startp[0] == (char)0xEF && startp[1] == (char)0xBB && startp[2] == (char)0xBF)
+            startp += 3;
+
         if( *endp != '\n' && *endp != '\r' && !feof( fp ) )
         {
-            printf( "parameter file has a very long line that I cannot handle!\n" );
-            fclose( fp );
+            fprintf( stderr, "parameter file has a very long line that I cannot handle!\n" );
             ret = -3;
             break;
         }
 
+        while( endp > startp && isspace( *endp ) )
+            *endp-- = 0;
+
         // trim line
-        while( isspace( *startp ) )
+        while( *startp && isspace( *startp ) )
             ++startp;
-
-        while( isspace( *endp ) )
-            --endp;
-
-        endp[1] = 0;
-
-        // skip UTF-8 BOM
-        if( startp[0] == (char)0xEF && startp[1] == (char)0xBB && startp[2] == (char)0xBF)
-            startp += 3;
 
         if( *startp == '#' || *startp == 0 )
             continue;
@@ -561,14 +615,18 @@ int parse_parameter( const char* fname )
         if( !value )
             continue;
 
-        *value++ = '\0';
+        *value++ = 0;
+
+        while( *value && isspace( *value ) )
+            ++value;
 
         action_parse_key( key, value );
     }
 
-    fclose( fp );
+    if( fp )
+        fclose( fp );
 
-    return 0;
+    return ret;
 }
 
 
@@ -910,14 +968,15 @@ int pack_update( const char* srcdir, const char* dstfile )
         strncpy( header.parts[i].name, Packages[i].name.c_str(), sizeof(header.parts[i].name) );
         strncpy( header.parts[i].fullpath, Packages[i].fullpath.c_str(), sizeof(header.parts[i].fullpath) );
 
-        if( Packages[i].fullpath == "SELF" )
+        if( Packages[i].fullpath == "SELF" ||
+            Packages[i].fullpath == "RESERVED" )
+        {
+            printf( "Skipping content: %s\n", Packages[i].fullpath.c_str() );
             continue;
-
-        if( Packages[i].fullpath == "RESERVED" )
-            continue;
+        }
 
         snprintf( buf, sizeof(buf), "%s/%s", srcdir, header.parts[i].fullpath );
-        printf( "Adding bootloader partition: %-24s  using: %s\n", header.parts[i].name, buf );
+        printf( "Adding partition: %-24s  using: %s\n", header.parts[i].name, buf );
 
         ret = import_package( fp_update, &header.parts[i], buf );
         if( ret )
@@ -966,7 +1025,7 @@ int pack_update( const char* srcdir, const char* dstfile )
 
     fclose( fp_update );
 
-    printf( "------ OK ------\n" );
+    printf( "------ OK ------\n\n" );
 
     return ret;
 }
@@ -975,14 +1034,16 @@ int pack_update( const char* srcdir, const char* dstfile )
 void usage()
 {
     printf( "USAGE:\n"
-            "\t%s <-pack | -unpack> <src_dir> <out_dir>\n"
+            "\t%s -pack    <src_dir> <out_img>\n"
+            "\t\t or\n"
+            "\t%s -unpack  <src_img> <out_dir>\n"
             "\t\t or\n"
             "\t%s -CMDLINE <src_dir>\n\n"
             "Examples:\n"
             "\t%s -pack src_dir update.img\tpack files\n"
             "\t%s -unpack update.img out_dir\tunpack files\n"
             "\t%s -CMDLINE src_dir > cmdline\tcapture CMDLINE fragment into cmdline\n",
-            appname, appname, appname, appname, appname
+            appname, appname, appname, appname, appname, appname
             );
 }
 

@@ -18,7 +18,7 @@
 struct UPDATE_PART {
     char         name[32];
     char         fullpath[60];      // a path of where the partition file came from
-    uint32_t     flash_size;        // how many sector to reserve for this partition in the flash.
+    uint32_t     flash_size;        // how many sectors to reserve for this partition in the flash.
     uint32_t     part_offset;       // starting byte offset within the update.img file for this partition
     uint32_t     flash_offset;      // sector offset within the flash memory.
     uint32_t     padded_size;       // part_bytecount rounded up to nearest sector in bytes
