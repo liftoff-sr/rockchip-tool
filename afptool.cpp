@@ -800,29 +800,32 @@ static unsigned find_in_map( const std::string& aName, const PAD_MAP& aMap )
 
 
 // convert bytes to 512 byte sectors
-#define BYTES2SECTORS(x)      unsigned((uint64_t(x)+511)/512)
+#define BYTES2SECTORS(x)        unsigned((uint64_t(x)+511)/512)
+#define MBYTES(x)               ( uint64_t(x)*1024*1024)
+#define GBYTES(x)               ( uint64_t(x)*1024*1024*1024)
 
-unsigned partition_padding( unsigned aSize, const std::string& aPartitionName )
+
+unsigned partition_constraints( unsigned aSize, const std::string& aPartitionName )
 {
     // tables of bootloader partion names and sizes
 
     // minimums:
     // partition may not be smaller than this.
     static const PAD_MAP minimums = {
-        { "bootloader",     BYTES2SECTORS(16*1024*1024) },            // 1*1024*1024 = a megabyte
-        { "boot",           BYTES2SECTORS(16*1024*1024) },
+        { "bootloader",     BYTES2SECTORS( MBYTES(1) ) },            // 1*1024*1024 = a megabyte
+        { "boot",           BYTES2SECTORS( MBYTES(16) ) },
 
         // This is a hack for my 32 gbyte emmc, gives me a 6 gbyte swap
         // partition without having to supply an image file.
-        { "swap",           BYTES2SECTORS(6*1024*1024*1024ULL) },     // 1024*1024*1024 = gigabyte
+        { "swap",           BYTES2SECTORS( GBYTES(6)) },
     };
 
     // paddings:
     // to add to the end of respective parition's input file size.
     static const PAD_MAP paddings = {
-        { "bootloader",     BYTES2SECTORS(1*1024*1024) },
-        { "recover-script", BYTES2SECTORS(1*1024*1024) },
-        { "linuxroot",      BYTES2SECTORS(5*1024*1024) },
+        { "bootloader",     BYTES2SECTORS( MBYTES(1) ) },
+        { "recover-script", BYTES2SECTORS( MBYTES(1) ) },
+        { "linuxroot",      BYTES2SECTORS( MBYTES(5) ) },
     };
 
     aSize += find_in_map( aPartitionName, paddings );
@@ -864,7 +867,7 @@ int compute_cmdline( const char* srcdir )
 
         unsigned file_sectors = BYTES2SECTORS( st.st_size );
 
-        file_sectors += partition_padding( file_sectors, Packages[i].name );
+        file_sectors = partition_constraints( file_sectors, Packages[i].name );
 
         if( failed &&
             Packages[i].fullpath != "RESERVED" &&
@@ -882,12 +885,16 @@ int compute_cmdline( const char* srcdir )
         unsigned cur_flash_sectors = file_sectors;      // partition size in sectors
         unsigned cur_flash_offset  = flash_offset;      // partition offset in sectors
 
-        flash_offset += cur_flash_offset;
+        flash_offset += cur_flash_sectors;
 
         if( i )
             printf( "," );
 
-        D( Packages[i].Show( stderr ); )
+        D( fprintf( stderr,
+            "name:%-12s cur_flash_sectors:0x%x cur_flash_offset:0x%0x\n",
+            Packages[i].name.c_str(),
+            cur_flash_sectors, cur_flash_offset
+            ); )
 
         if( i == Packages.size()-1 )
         {

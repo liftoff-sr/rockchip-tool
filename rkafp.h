@@ -10,7 +10,7 @@
  * is embedded in the UPDATE_HEADER within an update.img file and represents a
  * partition in the flash even though it is in the update.img file.  The format
  * of the update.img file is a design which has nothing to do with the format
- * in the flash.  Think of this as similar to a zip file header record.
+ * in the flash.  Think of this as similar to a zip file directory record.
  * Some of the offsets and lengths in this structure are in bytes.  This makes this
  * file format lame because these fields are only 32 bits, limiting partitions
  * to 4 gbytes or so and the file format begins to fall over when it goes beyond
