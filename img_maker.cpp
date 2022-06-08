@@ -216,7 +216,7 @@ void usage()
             "\t%s -rk32 Loader.bin 4 4 0 rawimage.img rkimage.img\n"
             "\n"
             "Options:\n"
-            "\t<chiptype>: -rk29 | -rk30 | -rk31 | -rk32\n",
+            "\t<chiptype>: -rk29 | -rk30 | -rk31 | -rk3128 | -rk32 | -rk3368\n",
             progname, progname
             );
 }
@@ -254,6 +254,16 @@ int main( int argc, char** argv )
         else if( strcmp( argv[1], "-rk32" ) == 0 )
         {
             pack_rom( 0x80, argv[2], atoi( argv[3] ), atoi( argv[4] ),
+                    atoi( argv[5] ), argv[6], argv[7] );
+        }
+        else if (strcmp(argv[1], "-rk3128") == 0)
+        {
+            pack_rom(0x33313241, argv[2], atoi( argv[3] ), atoi( argv[4] ),
+                    atoi( argv[5] ), argv[6], argv[7] );
+        }
+        else if (strcmp(argv[1], "-rk3368") == 0)
+        {
+            pack_rom(0x41, argv[2], atoi( argv[3] ), atoi( argv[4] ),
                     atoi( argv[5] ), argv[6], argv[7] );
         }
         else
