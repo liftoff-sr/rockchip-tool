@@ -293,7 +293,7 @@ int unpack_update( const char* srcfile, const char* dstdir )
 
             if( memcmp( part->name, "parameter", 9 ) == 0 )
             {
-                part->flash_offset   += sizeof(PARAM_HEADER);
+                part->part_offset   += sizeof(PARAM_HEADER);
                 part->part_bytecount -= sizeof(PARAM_HEADER) + 4;    // CRC + PARM_HEADER
             }
 
