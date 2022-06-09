@@ -55,7 +55,7 @@ import_end:
 void append_md5sum( FILE* fp )
 {
     MD5_CTX md5_ctx;
-    char buffer[1024*16];
+    char buffer[1024*16] = {0};
 
     MD5_Init( &md5_ctx );
 
@@ -71,7 +71,7 @@ void append_md5sum( FILE* fp )
 
     for( int i = 0; i < 16; ++i )
     {
-        fprintf( fp, "%02x", buffer[i] );
+        fprintf( fp, "%02hhx", buffer[i] );
     }
 }
 
