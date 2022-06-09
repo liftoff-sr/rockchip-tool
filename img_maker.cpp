@@ -95,21 +95,18 @@ int pack_rom( int chiptype,
     rom_hdr.chip = chiptype;
     rom_hdr.version = ROM_VERSION(majver, minver, subver);
 
-    if( chiptype == 0x50 )
-    {
-        rom_hdr.code = 0x01030000;
-    }
-    else if( chiptype == 0x60 )
-    {
-        rom_hdr.code = 0x01050000;
-    }
-    else if( chiptype == 0x70 )
-    {
-        rom_hdr.code = 0x01060000;
-    }
-    else if( chiptype == 0x80 )
-    {
-        rom_hdr.code = 0x01060000;
+    switch(chiptype){
+        case 0x50:
+            rom_hdr.code = 0x01030000;
+            break;
+        case 0x60:
+            rom_hdr.code = 0x01050000;
+            break;
+        case 0x70:
+        case 0x80:
+        case 0x33333041:
+            rom_hdr.code = 0x01060000;
+            break;
     }
 
     nowtime = time( NULL );
@@ -263,7 +260,7 @@ int main( int argc, char** argv )
         }
         else if (strcmp(argv[1], "-rk3368") == 0)
         {
-            pack_rom(0x41, argv[2], atoi( argv[3] ), atoi( argv[4] ),
+            pack_rom(0x33333041, argv[2], atoi( argv[3] ), atoi( argv[4] ),
                     atoi( argv[5] ), argv[6], argv[7] );
         }
         else
