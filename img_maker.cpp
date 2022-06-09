@@ -55,7 +55,7 @@ import_end:
 void append_md5sum( FILE* fp )
 {
     MD5_CTX md5_ctx;
-    char buffer[1024*16];
+    char buffer[1024*16] = {0};
 
     MD5_Init( &md5_ctx );
 
@@ -71,7 +71,7 @@ void append_md5sum( FILE* fp )
 
     for( int i = 0; i < 16; ++i )
     {
-        fprintf( fp, "%02x", buffer[i] );
+        fprintf( fp, "%02hhx", buffer[i] );
     }
 }
 
@@ -95,21 +95,18 @@ int pack_rom( int chiptype,
     rom_hdr.chip = chiptype;
     rom_hdr.version = ROM_VERSION(majver, minver, subver);
 
-    if( chiptype == 0x50 )
-    {
-        rom_hdr.code = 0x01030000;
-    }
-    else if( chiptype == 0x60 )
-    {
-        rom_hdr.code = 0x01050000;
-    }
-    else if( chiptype == 0x70 )
-    {
-        rom_hdr.code = 0x01060000;
-    }
-    else if( chiptype == 0x80 )
-    {
-        rom_hdr.code = 0x01060000;
+    switch(chiptype){
+        case 0x50:
+            rom_hdr.code = 0x01030000;
+            break;
+        case 0x60:
+            rom_hdr.code = 0x01050000;
+            break;
+        case 0x70:
+        case 0x80:
+        case 0x33333041:
+            rom_hdr.code = 0x01060000;
+            break;
     }
 
     nowtime = time( NULL );
@@ -216,7 +213,7 @@ void usage()
             "\t%s -rk32 Loader.bin 4 4 0 rawimage.img rkimage.img\n"
             "\n"
             "Options:\n"
-            "\t<chiptype>: -rk29 | -rk30 | -rk31 | -rk32\n",
+            "\t<chiptype>: -rk29 | -rk30 | -rk31 | -rk3128 | -rk32 | -rk3368\n",
             progname, progname
             );
 }
@@ -254,6 +251,16 @@ int main( int argc, char** argv )
         else if( strcmp( argv[1], "-rk32" ) == 0 )
         {
             pack_rom( 0x80, argv[2], atoi( argv[3] ), atoi( argv[4] ),
+                    atoi( argv[5] ), argv[6], argv[7] );
+        }
+        else if (strcmp(argv[1], "-rk3128") == 0)
+        {
+            pack_rom(0x33313241, argv[2], atoi( argv[3] ), atoi( argv[4] ),
+                    atoi( argv[5] ), argv[6], argv[7] );
+        }
+        else if (strcmp(argv[1], "-rk3368") == 0)
+        {
+            pack_rom(0x33333041, argv[2], atoi( argv[3] ), atoi( argv[4] ),
                     atoi( argv[5] ), argv[6], argv[7] );
         }
         else
