@@ -94,7 +94,7 @@ int check_md5sum( FILE* fp, unsigned length )
 }
 
 
-int unpack_rom( const char* filepath, const char* dstfile )
+int unpack_rom( const char* filepath, const char *loader_filename, const char* dstfile )
 {
     int ret = 0;
     RKFW_HEADER rom_header;
@@ -181,8 +181,8 @@ int unpack_rom( const char* filepath, const char* dstfile )
 
     printf( "md5sum is OK\n" );
 
-    // export_data(loader_filename, rom_header.loader_offset, rom_header.loader_length, fp);
-    ret = export_data( dstfile, rom_header.image_offset, rom_header.image_length, fp );
+    ret = export_data( loader_filename, rom_header.loader_offset, rom_header.loader_length, fp );
+    ret &= export_data( dstfile, rom_header.image_offset, rom_header.image_length, fp );
 
 out:
     if( fp )
@@ -205,13 +205,13 @@ int main( int argc, char** argv )
 
     fprintf( stderr, "%s version: " __DATE__ "\n\n", progname );
 
-    if( argc != 3 )
+    if( argc != 4 )
     {
-        fprintf( stderr, "usage: %s <source> <destination>\n", argv[0] );
+        fprintf( stderr, "usage: %s <source> <destination_loader> <destination_image>\n", argv[0] );
         return 1;
     }
 
-    unpack_rom( argv[1], argv[2] );
+    unpack_rom( argv[1], argv[2], argv[3] );
 
     return 0;
 }
